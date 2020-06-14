@@ -1,0 +1,54 @@
+RabbitMQ Server 3.7.17
+rabbitmq_server_release 69a7bdb240ca9aab6f62e56c3c468cdf0de2d1a4 
+amqp10_client d588ebd7ffff58c28c7e09b7d85caa7730bb9743 v3.7.17-rc.2
+amqp10_common d449d89173e94f2af7c7822316d56c2298e20fad v3.7.17-rc.2
+amqp_client 20a74443f4d6802e793733741c397e5fd1c29230 v3.7.17-rc.2
+cowboy  
+cowlib 8588724cf91ddbb53b9c35ed665866556b217323 2.7.0
+elvis_mk ac5ad774c0e317c8bfd0f5cca4153dd291a40ed1 master
+goldrush 8f1b715d36b650ec1e1f5612c00e28af6ab0de82 0.1.9
+jsx  
+lager  
+observer_cli ac167efd42e9c09d047e36428a38521e3ef84672 1.5.0
+rabbit d15713abd76f3d4c2d44829f29bc7e4da49167c7 v3.7.17-rc.2
+rabbit_common 75159f87fd77be038510653351d53daac20b476b v3.7.17-rc.2
+rabbitmq_amqp1_0 3325defc7445d0311b48c00cbe9fc87f4673d53f v3.7.17-rc.2
+rabbitmq_auth_backend_cache f825a71360b65825064fd144b810185d5b52d322 v3.7.17-rc.2
+rabbitmq_auth_backend_http 77adb241f6a50f2b28c86e6c335a3d3d07633092 v3.7.17-rc.2
+rabbitmq_auth_backend_ldap 49bb6076a89f901460a4b31e81c9c6c699043056 v3.7.17-rc.2
+rabbitmq_auth_mechanism_ssl f16c0afc3dc9553fae9e034e8433d67136f7dd09 v3.7.17-rc.2
+rabbitmq_aws 477004977c74160f215c0ef348a78f0488b9120b v3.7.17-rc.2
+rabbitmq_cli 8dc42f0b09396008519ae6656dae6bcf24302edb v3.7.17-rc.2
+rabbitmq_codegen b808d4231384eeaa11af0e8f26436ee5b6f96bec v3.7.17-rc.2
+rabbitmq_consistent_hash_exchange 406dc1f8d7c15b775227e6393e3a499363025b7b v3.7.17-rc.2
+rabbitmq_event_exchange 2c2d5cbe1f4cf506688cd75be7b7b85962545caf v3.7.17-rc.2
+rabbitmq_federation aedfe35bf0ce473cc752da4f6d42b29f79750b10 v3.7.17-rc.2
+rabbitmq_federation_management 4237289b3871adcd5fcf15d73f3bd3d20e3fa2ba 
+rabbitmq_jms_topic_exchange 5e5d05103e91037f701f5796913f06f063e996fb v3.7.17-rc.2
+rabbitmq_management 686b98b4f86b8b52c91280a472d5f04e59c08c48 
+rabbitmq_management_agent 201ade9d0f776d2ae948b364ec0e7143eec306b0 v3.7.17-rc.2
+rabbitmq_mqtt 43906ba51aad80e43459409e75abdb67a885f376 v3.7.17-rc.2
+rabbitmq_peer_discovery_aws 62bd6a50d655f77731a8ffa2d0eb57658614d849 v3.7.17-rc.2
+rabbitmq_peer_discovery_common 08a3146c266063146fb1a8f089ed6fa986f8c2d8 v3.7.17-rc.2
+rabbitmq_peer_discovery_consul c4876cc2141d09a99fb4380070c24836d9a78374 v3.7.17-rc.2
+rabbitmq_peer_discovery_etcd 57f10dbae77260c38357fd05e89eee3973cf6ab7 v3.7.17-rc.2
+rabbitmq_peer_discovery_k8s 2a3e25c831e644ebee7820e3734512a7152de455 v3.7.17-rc.2
+rabbitmq_random_exchange b47c1160fe5e0a94d3ee443466e56a656e2a7de8 v3.7.17-rc.2
+rabbitmq_recent_history_exchange cfe1551dde23a4e743a85d1b84047fb13af006ae v3.7.17-rc.2
+rabbitmq_sharding d223396658446ab3ca0b0b6fe7945e5240080745 v3.7.17-rc.2
+rabbitmq_shovel 98e2bd1b10ee63550264509b13bfbf340b97628a 
+rabbitmq_shovel_management 33e0005395e8bfe6cceafbb78618656ece001b51 
+rabbitmq_stomp 5739ccf5f4c1e4297f45c7fe02d614c0ad6abaad 
+rabbitmq_top 2b7815e9c0fdf9562f9ba4ead14c2d280f350cf7 v3.7.17-rc.2
+rabbitmq_tracing 9342bfde90fe50fc1fc30174a47355a3a4d5ce85 v3.7.17-rc.2
+rabbitmq_trust_store 16a3d00e215caa738f2d39524169e19217ace7cb v3.7.17-rc.2
+rabbitmq_web_dispatch c7052597fc50e6aca3805860cae7b09f00ae63c8 v3.7.17-rc.2
+rabbitmq_web_mqtt 79b6960df904d044618ba88e45152c40b804f43b v3.7.17-rc.2
+rabbitmq_web_mqtt_examples be2f607435c3e576d90beeae444dd75483498ae0 v3.7.17-rc.2
+rabbitmq_web_stomp 76a41aad76690896b1c25143f5a44aef2e4901d2 v3.7.17-rc.2
+rabbitmq_web_stomp_examples c1cf6b2365c0a536c75d5686852e33f0e2a4679e v3.7.17-rc.2
+ranch  
+recon  
+stdout_formatter  
+syslog e47106b8d85bee396a489b6f8f71cd91d3e4c022 3.4.5
+sysmon_handler  

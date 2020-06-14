@@ -1,0 +1,8 @@
+%{
+  "csv": {:hex, :csv, "2.0.0", "c66fea89ba7862b94901baf0871285e9b73cad89c5fdb57a6386d2adcf29593e", [:mix], [{:parallel_stream, "~> 1.0.4", [hex: :parallel_stream, repo: "hexpm", optional: false]}], "hexpm"},
+  "json": {:hex, :json, "1.2.5", "3682c18c6b07480df2122d0daf5c05457b42c1990f197ce3de53884e8ba834c4", [:mix], [{:benchee, "~> 0.8", [hex: :benchee, repo: "hexpm", optional: true]}, {:benchee_html, "~> 0.1", [hex: :benchee_html, repo: "hexpm", optional: true]}, {:exjsx, "~> 4.0", [hex: :exjsx, repo: "hexpm", optional: true]}, {:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: true]}, {:jsone, "~> 1.4", [hex: :jsone, repo: "hexpm", optional: true]}, {:poison, "~> 3.0", [hex: :poison, repo: "hexpm", optional: true]}, {:tiny, "~> 1.0", [hex: :tiny, repo: "hexpm", optional: true]}], "hexpm"},
+  "observer_cli": {:hex, :observer_cli, "1.5.1", "9f01c08178d77a657a3652870846d4caee7a7b71ca32971df7ce57c079da6fde", [:mix, :rebar3], [{:recon, "~>2.5.0", [hex: :recon, repo: "hexpm", optional: false]}], "hexpm"},
+  "parallel_stream": {:hex, :parallel_stream, "1.0.6", "b967be2b23f0f6787fab7ed681b4c45a215a81481fb62b01a5b750fa8f30f76c", [:mix], [], "hexpm"},
+  "recon": {:hex, :recon, "2.5.0", "2f7fcbec2c35034bade2f9717f77059dc54eb4e929a3049ca7ba6775c0bd66cd", [:mix, :rebar3], [], "hexpm"},
+  "stdout_formatter": {:hex, :stdout_formatter, "0.2.3", "ec24868d8619757a68f0798357c7190807a1cfc42ce90c18c23760e59249a21a", [:mix, :rebar3], [], "hexpm"},
+}
