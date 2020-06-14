@@ -72,6 +72,7 @@ start_link() ->
     %% RabbitMQ 3.7 supports OTP >= 19.3
     case erlang:function_exported(gen_event, start_link, 2) of
         true ->
+            % 创建一个名为 rabbit_event 的 event manager 进程，后续就可以向这个进程调用 add handler 或者 notify 等操作了
             gen_event:start_link(
               {local, ?MODULE},
               [{spawn_opt, [{fullsweep_after, 0}]}]
@@ -158,6 +159,7 @@ notify(Type, Props) -> notify(Type, Props, none).
 
 notify(Type, Props, Ref) ->
     %% Using {Name, node()} here to not fail if the event handler is not started
+    %% 调用 rabbit_connection_tracking_handler:handle_event，看起来只有那个模块添加了 event handler
     gen_event:notify({?MODULE, node()}, event_cons(Type, Props, Ref)).
 
 sync_notify(Type, Props) -> sync_notify(Type, Props, none).

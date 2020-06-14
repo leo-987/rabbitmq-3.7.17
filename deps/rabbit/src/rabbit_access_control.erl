@@ -118,6 +118,7 @@ user(_AuthUser, Error) ->
     Error.
 
 auth_user(#user{username = Username, tags = Tags}, Impl) ->
+    % 创建一条 auth_user 记录并返回
     #auth_user{username = Username,
                tags     = Tags,
                impl     = Impl}.
@@ -148,46 +149,50 @@ check_vhost_access(User = #user{username       = Username,
 
 check_resource_access(User, R = #resource{kind = exchange, name = <<"">>},
                       Permission) ->
-    check_resource_access(User, R#resource{name = <<"amq.default">>},
+    check_resource_access(User, R#resource{name = <<"amq.default">>}, % 消息中未指定 exchange 名，则默认使用名为 amq.default 的 exchange
                           Permission);
 check_resource_access(User = #user{username       = Username,
                                    authz_backends = Modules},
                       Resource, Permission) ->
     lists:foldl(
       fun({Module, Impl}, ok) ->
-              check_access(
-                fun() -> Module:check_resource_access(
+              check_access( % 最终调用传入的 fun 检查权限，返回 true 或 false 或 error
+                fun() -> Module:check_resource_access(  % 调用 rabbit_auth_backend_internal:check_resource_access
                            auth_user(User, Impl), Resource, Permission) end,
                 Module, "access to ~s refused for user '~s'",
                 [rabbit_misc:rs(Resource), Username]);
-         (_, Else) -> Else
+         (_, Else) -> Else  % fun 的子句，第一个子句只匹配 ok 的累积器，第二个子句匹配非 ok 的累积器
+                            % 当没有该子句，且 check_access 返回 false 时，由于没有匹配的函数，foldl 会抛出异常
+                            % 注意这里只要有一次遍历返回非 ok，整个 foldl 都返回非 ok
       end, ok, Modules).
 
 check_topic_access(User = #user{username = Username,
-                                authz_backends = Modules},
+                                authz_backends = Modules},  % [{rabbit_auth_backend_internal,none}] 注意是个列表
                             Resource, Permission, Context) ->
     lists:foldl(
         fun({Module, Impl}, ok) ->
-            check_access(
-                fun() -> Module:check_topic_access(
+            check_access( % 最终调用传入的 fun 检查权限，返回 true 或 false 或 error
+                fun() -> Module:check_topic_access( % 调用 rabbit_auth_backend_internal:check_topic_access
                     auth_user(User, Impl), Resource, Permission, Context) end,
-                Module, "access to topic '~s' in exchange ~s refused for user '~s'",
-                [maps:get(routing_key, Context), rabbit_misc:rs(Resource), Username]);
-            (_, Else) -> Else
+                Module, "access to topic '~s' in exchange ~s refused for user '~s'",    % 校验失败打印的错误信息
+                [maps:get(routing_key, Context), rabbit_misc:rs(Resource), Username]);  % 校验失败打印的错误信息
+            (_, Else) -> Else % 原理同 check_resource_access 函数
         end, ok, Modules).
 
 check_access(Fun, Module, ErrStr, ErrArgs) ->
     check_access(Fun, Module, ErrStr, ErrArgs, access_refused).
 
+% 校验各类资源权限都会走到这个函数，例如 topic，vhost，queue，exchange 等
+% 如果校验失败，会抛出异常
 check_access(Fun, Module, ErrStr, ErrArgs, ErrName) ->
     case Fun() of
         true ->
             ok;
         false ->
-            rabbit_misc:protocol_error(ErrName, ErrStr, ErrArgs);
+            rabbit_misc:protocol_error(ErrName, ErrStr, ErrArgs); % 抛出异常
         {error, E}  ->
             FullErrStr = ErrStr ++ ", backend ~s returned an error: ~p~n",
             FullErrArgs = ErrArgs ++ [Module, E],
             rabbit_log:error(FullErrStr, FullErrArgs),
-            rabbit_misc:protocol_error(ErrName, FullErrStr, FullErrArgs)
+            rabbit_misc:protocol_error(ErrName, FullErrStr, FullErrArgs)  % 抛出异常
     end.

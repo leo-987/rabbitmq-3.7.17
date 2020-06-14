@@ -35,6 +35,12 @@
 %% * Wait for them all to be stopped
 %% * Start them again
 %%
+%% 整体流程
+%% * 找出 winning 分区
+%% * 停止所有非 winning 分区节点
+%% * 等待停止
+%% * 重启停止的节点
+%%
 %% To keep things simple, we assume all nodes are up. We don't start
 %% unless all nodes are up, and if a node goes down we abandon the
 %% whole process. To further keep things simple we also defer the
@@ -136,7 +142,7 @@ init() ->
 
 maybe_start(not_healing) ->
     case enabled() of
-        true  -> Leader = leader(),
+        true  -> Leader = leader(), % 集群中所有节点都会执行，选举出序号最小的节点作为 leader，然后通知它
                  send(Leader, {request_start, node()}),
                  rabbit_log:info("Autoheal request sent to ~p~n", [Leader]),
                  not_healing;
@@ -145,6 +151,7 @@ maybe_start(not_healing) ->
 maybe_start(State) ->
     State.
 
+% 检查配置是否开启了 autoheal 模式
 enabled() ->
     case application:get_env(rabbit, cluster_partition_handling) of
         {ok, autoheal}                         -> true;
@@ -152,12 +159,14 @@ enabled() ->
         _                                      -> false
     end.
 
+% 选举集群中第一个节点为 leader
 leader() ->
-    [Leader | _] = lists:usort(rabbit_mnesia:cluster_nodes(all)),
+    [Leader | _] = lists:usort(rabbit_mnesia:cluster_nodes(all)), % 排序一个列表并删除重复值
     Leader.
 
 %% This is the winner receiving its last notification that a node has
 %% stopped - all nodes can now start again
+%% 得到所有 loser 停止完毕的消息
 rabbit_down(Node, {winner_waiting, [Node], Notify}) ->
     rabbit_log:info("Autoheal: final node has stopped, starting...~n",[]),
     winner_finish(Notify);
@@ -208,24 +217,25 @@ process_down(_, State) ->
 
 %% By receiving this message we become the leader
 %% TODO should we try to debounce this?
+%% 处理自己成为 leader 的消息
 handle_msg({request_start, Node},
            not_healing, Partitions) ->
     rabbit_log:info("Autoheal request received from ~p~n", [Node]),
     case check_other_nodes(Partitions) of
-        {error, E} ->
+        {error, E} -> % 有没运行的节点，不执行后续操作
             rabbit_log:info("Autoheal request denied: ~s~n", [fmt_error(E)]),
             not_healing;
         {ok, AllPartitions} ->
             {Winner, Losers} = make_decision(AllPartitions),
             rabbit_log:info("Autoheal decision~n"
-                            "  * Partitions: ~p~n"
-                            "  * Winner:     ~p~n"
-                            "  * Losers:     ~p~n",
+                            "  * Partitions: ~p~n"  % 格式 [['rabbit@node-1','rabbit@node-0'],['rabbit@node-2']]
+                            "  * Winner:     ~p~n"  % 格式 'rabbit@node-1'
+                            "  * Losers:     ~p~n", % 格式 'rabbit@node-2'
                             [AllPartitions, Winner, Losers]),
             case node() =:= Winner of
-                true  -> handle_msg({become_winner, Losers},
+                true  -> handle_msg({become_winner, Losers},  % 自己就是 winner，直接开始处理
                                     not_healing, Partitions);
-                false -> send(Winner, {become_winner, Losers}),
+                false -> send(Winner, {become_winner, Losers}), % 告知 winner 你已成为 winner
                          {leader_waiting, Winner, Losers}
             end
     end;
@@ -236,6 +246,7 @@ handle_msg({request_start, Node},
                     "ignoring~n", [Node]),
     State;
 
+% 处理自己成为 winner 的消息
 handle_msg({become_winner, Losers},
            not_healing, _Partitions) ->
     rabbit_log:info("Autoheal: I am the winner, waiting for ~p to stop~n",
@@ -259,11 +270,14 @@ handle_msg({become_winner, _},
     winner_finish(Losers),
     not_healing;
 
+% winner 告知本节点（loser）停止运行
 handle_msg({winner_is, Winner}, State = not_healing,
            _Partitions) ->
     %% This node is a loser, nothing else.
     Pid = restart_loser(State, Winner),
     {restarting, Pid};
+
+% winner 告知本节点（loser+leader）停止运行
 handle_msg({winner_is, Winner}, State = {leader_waiting, Winner, _},
            _Partitions) ->
     %% This node is the leader and a loser at the same time.
@@ -290,6 +304,7 @@ handle_msg(report_autoheal_status, State, _Partitions) ->
     %% to the leader: we will send the notification when it is over.
     State;
 
+% leader 收到来自 winner 的完成 autoheal 的消息，转换状态
 handle_msg({autoheal_finished, Winner},
            {leader_waiting, Winner, _}, _Partitions) ->
     %% The winner is finished with the autoheal process and notified us
@@ -336,9 +351,9 @@ winner_finish(Notify) ->
     %%
     %% To work around the problem, we make sure Mnesia is stopped on all
     %% losing nodes before sending the "autoheal_safe_to_start" signal.
-    wait_for_mnesia_shutdown(Notify),
-    [{rabbit_outside_app_process, N} ! autoheal_safe_to_start || N <- Notify],
-    send(leader(), {autoheal_finished, node()}),
+    wait_for_mnesia_shutdown(Notify), % 等待所有 mnesia 停止
+    [{rabbit_outside_app_process, N} ! autoheal_safe_to_start || N <- Notify],  % 通知 loser 启动进程
+    send(leader(), {autoheal_finished, node()}),  % 告知 leader，本 winner 节点已经启动完所有 loser 了
     not_healing.
 
 %% This improves the previous implementation, but could still potentially enter an infinity
@@ -374,15 +389,15 @@ restart_loser(State, Winner) ->
       "Autoheal: we were selected to restart; winner is ~p~n", [Winner]),
     rabbit_node_monitor:run_outside_applications(
       fun () ->
-              MRef = erlang:monitor(process, {?SERVER, Winner}),
+              MRef = erlang:monitor(process, {?SERVER, Winner}),  % 监控 winner 进程，防止 winner 退出
               rabbit:stop(),
               NextState = receive
                   {'DOWN', MRef, process, {?SERVER, Winner}, _Reason} ->
                       not_healing;
-                  autoheal_safe_to_start ->
+                  autoheal_safe_to_start -> % 收到 winner 的通知，可以进行重启了
                       State
               end,
-              erlang:demonitor(MRef, [flush]),
+              erlang:demonitor(MRef, [flush]),  % 解除对 winner 的监控
               %% During the restart, the autoheal state is lost so we
               %% store it in the application environment temporarily so
               %% init/0 can pick it up.
@@ -395,32 +410,37 @@ restart_loser(State, Winner) ->
               %% autoheal process is finished or not.
               application:set_env(rabbit,
                 ?AUTOHEAL_STATE_AFTER_RESTART, NextState),
-              rabbit:start()
+              rabbit:start()  % loser 开始启动
       end, true).
 
+% 根据分区的客户端连接总数确定 winner 和 loser
+% 客户端连接总数最多的分区中的第一个节点作为 winner
+% 其他分区中的所有节点作为 loser
 make_decision(AllPartitions) ->
-    Sorted = lists:sort([{partition_value(P), P} || P <- AllPartitions]),
-    [[Winner | _] | Rest] = lists:reverse([P || {_, P} <- Sorted]),
-    {Winner, lists:append(Rest)}.
+    Sorted = lists:sort([{partition_value(P), P} || P <- AllPartitions]), % 按列表第一个元素排序，即按分区的客户端连接数排序
+    [[Winner | _] | Rest] = lists:reverse([P || {_, P} <- Sorted]), % 列表反转，P 是一个列表，元素是节点
+    {Winner, lists:append(Rest)}. % 剩余分区中的所有节点都是 loser
 
+% 计算分区 Partition 中所有节点的客户端连接总数
 partition_value(Partition) ->
     Connections = [Res || Node <- Partition,
-                          Res <- [rpc:call(Node, rabbit_networking,
+                          Res <- [rpc:call(Node, rabbit_networking, % 对于分区中的每一个节点，调用一次 rpc
                                            connections_local, [])],
                           is_list(Res)],
-    {length(lists:append(Connections)), length(Partition)}.
+    {length(lists:append(Connections)), length(Partition)}. % 返回值 {分区客户端连接总数, 分区节点数}
 
 %% We have our local understanding of what partitions exist; but we
 %% only know which nodes we have been partitioned from, not which
 %% nodes are partitioned from each other.
 check_other_nodes(LocalPartitions) ->
-    Nodes = rabbit_mnesia:cluster_nodes(all),
-    {Results, Bad} = rabbit_node_monitor:status(Nodes -- [node()]),
-    RemotePartitions = [{Node, proplists:get_value(partitions, Res)}
+    Nodes = rabbit_mnesia:cluster_nodes(all), % 得到集群中所有节点，应该不包括连接不通的节点
+    {Results, Bad} = rabbit_node_monitor:status(Nodes -- [node()]), % 检查集群其他节点状态，Bad 包含 multi_call 调用失败的节点
+    RemotePartitions = [{Node, proplists:get_value(partitions, Res)}  % 收集其他节点上报的分区信息
                         || {Node, Res} <- Results],
+    % 收集其他节点认为挂掉的节点
     RemoteDown = [{Node, Down}
                   || {Node, Res} <- Results,
-                     Down <- [Nodes -- proplists:get_value(nodes, Res)],
+                     Down <- [Nodes -- proplists:get_value(nodes, Res)],  % nodes 包含了可联通节点
                      Down =/= []],
     case {Bad, RemoteDown} of
         {[], []} -> Partitions = [{node(), LocalPartitions} | RemotePartitions],
@@ -451,9 +471,9 @@ fmt_error({nodes_down, NodesDown}) ->
 stop_partition(Losers) ->
     %% The leader said everything was ready - do we agree? If not then
     %% give up.
-    Down = Losers -- rabbit_node_monitor:alive_rabbit_nodes(Losers),
+    Down = Losers -- rabbit_node_monitor:alive_rabbit_nodes(Losers),  % 检查 loser 节点是否存活，需要多次 rpc
     case Down of
-        [] -> [send(L, {winner_is, node()}) || L <- Losers],
-              {winner_waiting, Losers, Losers};
+        [] -> [send(L, {winner_is, node()}) || L <- Losers],  % winner 告知所有 loser 终止运行
+              {winner_waiting, Losers, Losers}; % 进入 winner_waiting 状态，等待所有 loser 终止
         _  -> abort(Down, Losers)
     end.

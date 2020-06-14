@@ -235,7 +235,7 @@ recover(VHost) ->
     %% order as the supplied queue names, so that we can zip them together
     %% for further processing in recover_durable_queues.
     {ok, OrderedRecoveryTerms} =
-        BQ:start(VHost, [QName || #amqqueue{name = QName} <- Queues]),
+        BQ:start(VHost, [QName || #amqqueue{name = QName} <- Queues]),  % 调用 rabbit_variable_queue:start
     case rabbit_amqqueue_sup_sup:start_for_vhost(VHost) of
         {ok, _}         ->
             Recovered = recover_durable_queues(lists:zip(Queues, OrderedRecoveryTerms)),
@@ -270,6 +270,7 @@ mark_local_durable_queues_stopped(VHost) ->
               State =/= stopped ]
         end).
 
+% 从 mnesia 中找出 VHost 下的属于当前节点的 queue
 find_durable_queues(VHost) ->
     Node = node(),
     mnesia:async_dirty(
@@ -307,7 +308,7 @@ find_durable_queues() ->
 recover_durable_queues(QueuesAndRecoveryTerms) ->
     {Results, Failures} =
         gen_server2:mcall(
-          [{rabbit_amqqueue_sup_sup:start_queue_process(node(), Q, recovery),
+          [{rabbit_amqqueue_sup_sup:start_queue_process(node(), Q, recovery), % 服务器启动，启动原有队列的进程，参数 Q 是 #amqqueue 结构
             {init, {self(), Terms}}} || {Q, Terms} <- QueuesAndRecoveryTerms]),
     [rabbit_log:error("Queue ~p failed to initialise: ~p~n",
                       [Pid, Error]) || {Pid, Error} <- Failures],
@@ -348,7 +349,7 @@ declare(QueueName = #resource{virtual_host = VHost}, Durable, AutoDelete, Args,
     case rabbit_vhost_sup_sup:get_vhost_sup(VHost, Node1) of
         {ok, _} ->
             gen_server2:call(
-              rabbit_amqqueue_sup_sup:start_queue_process(Node1, Q, declare),
+              rabbit_amqqueue_sup_sup:start_queue_process(Node1, Q, declare), % 为新建队列启动一个进程
               {init, new}, infinity);
         {error, Error} ->
             rabbit_misc:protocol_error(internal_error,
@@ -1159,6 +1160,8 @@ maybe_clear_recoverable_node(Node,
             ok
     end.
 
+% 1. 从 rabbit_vhost 调过来，表示处于启动 recover 阶段，需要删除上一个实例进程的一些残留数据，例如排他队列
+% 2. 从 rabbit_node_monitor 调过来，表示监控到其他节点下线
 on_node_down(Node) ->
     {QueueNames, QueueDeletions} = delete_queues_on_node_down(Node),
     notify_queue_binding_deletions(QueueDeletions),
@@ -1166,13 +1169,17 @@ on_node_down(Node) ->
     notify_queues_deleted(QueueNames),
     ok.
 
+% 找出需要删除的队列，然后分批删除
 delete_queues_on_node_down(Node) ->
+    % lists:unzip 把元组里的两个值分成为两个列表
+    % lists:flatten 将多层嵌套列表转为单层列表
     lists:unzip(lists:flatten([
         rabbit_misc:execute_mnesia_transaction(
-          fun () -> [{Queue, delete_queue(Queue)} || Queue <- Queues] end
-        ) || Queues <- partition_queues(queues_to_delete_when_node_down(Node))
+          fun () -> [{Queue, delete_queue(Queue)} || Queue <- Queues] end % 从 mnesia 中删除 queue 和关联的 binding
+        ) || Queues <- partition_queues(queues_to_delete_when_node_down(Node))  % partition_queues 把需要删除的队列划分成二维数组，一次最多删除 10 个 queue，防止耗时过长，阻塞其他 mnesia 操作
     ])).
 
+% 删除 queue 和关联的 binding
 delete_queue(QueueName) ->
     ok = mnesia:delete({rabbit_queue, QueueName}),
     rabbit_binding:remove_transient_for_destination(QueueName).
@@ -1192,9 +1199,11 @@ partition_queues(T) ->
 
 queues_to_delete_when_node_down(NodeDown) ->
     rabbit_misc:execute_mnesia_transaction(fun () ->
+        % qlc:q 会把查询（也就是它的参数）编译成一种用于查询数据库的内部格式，参数必须是一个字面上的列表推导，不能是通过求值得出的
+        % qlc:e 会执行编译好的查询
         qlc:e(qlc:q([QName ||
             #amqqueue{name = QName, pid = Pid} = Q <- mnesia:table(rabbit_queue),
-                node(Pid) == NodeDown andalso
+                node(Pid) == NodeDown andalso % node(Pid) 返回创建 Pid 的节点
                 not rabbit_mnesia:is_process_alive(Pid) andalso
                 (not rabbit_amqqueue:is_mirrored(Q) orelse
                 rabbit_amqqueue:is_dead_exclusive(Q))]
@@ -1246,7 +1255,7 @@ deliver([], _Delivery) ->
     [];
 
 deliver(Qs, Delivery = #delivery{flow = Flow}) ->
-    {MPids, SPids} = qpids(Qs),
+    {MPids, SPids} = qpids(Qs), % 从 #amqqueue 记录中提取出 pid 和 slave_pids 字段，pid 在重启后是会变的
     QPids = MPids ++ SPids,
     %% We use up two credits to send to a slave since the message
     %% arrives at the slave from two directions. We will ack one when
@@ -1268,7 +1277,7 @@ deliver(Qs, Delivery = #delivery{flow = Flow}) ->
     %% done with it.
     MMsg = {deliver, Delivery, false},
     SMsg = {deliver, Delivery, true},
-    delegate:invoke_no_result(MPids, {gen_server2, cast, [MMsg]}),
+    delegate:invoke_no_result(MPids, {gen_server2, cast, [MMsg]}),  % 将消息发往对应的进程，最终调用 rabbit_amqqueue_process:handle_cast
     delegate:invoke_no_result(SPids, {gen_server2, cast, [SMsg]}),
     QPids.
 

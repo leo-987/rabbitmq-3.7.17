@@ -31,7 +31,7 @@ amqp_params(ConnPid, Timeout) ->
                                  [?FILE, ?LINE, ConnPid, Error]),
             []
         end,
-    process_amqp_params_result(P).
+    process_amqp_params_result(P).  % rabbit_reader 会返回 bad_argument 错误
 
 process_amqp_params_result({error, {bad_argument, amqp_params}}) ->
     %% Some connection process modules do not handle the {info, [amqp_params]}

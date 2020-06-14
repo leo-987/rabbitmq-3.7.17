@@ -122,11 +122,11 @@
 %% fields described as 'transient' here are cleared when writing to
 %% rabbit_durable_<thing>
 -record(exchange, {
-          name, type, durable, auto_delete, internal, arguments, %% immutable
+          name, type, durable, auto_delete, internal, arguments, %% immutable name 是一个 exchange 类型的 resource
           scratches,       %% durable, explicitly updated via update_scratch/3
           policy,          %% durable, implicitly updated when policy changes
           operator_policy, %% durable, implicitly updated when policy changes
-          decorators,
+          decorators,      %% 结构是 {[...],[...]}
           options = #{}}).    %% transient, recalculated in store/1 (i.e. recovery)
 
 -record(amqqueue, {
@@ -167,7 +167,7 @@
 -record(runtime_parameters, {key, value}).
 
 -record(basic_message,
-        {exchange_name,     %% The exchange where the message was received
+        {exchange_name,     %% The exchange where the message was received #resource 类型
          routing_keys = [], %% Routing keys used during publish
          content,           %% The message content
          id,                %% A `rabbit_guid:gen()` generated id
@@ -276,7 +276,7 @@
 %% buffer". So we limit the max message size to 2^31 - 10^6 bytes (1MB
 %% to allow plenty of leeway for the #basic_message{} and #content{}
 %% wrapping the message body).
--define(MAX_MSG_SIZE, 2147383648).
+-define(MAX_MSG_SIZE, 2147383648).  % 单条消息最大2G
 
 -define(store_proc_name(N), rabbit_misc:store_proc_name(?MODULE, N)).
 

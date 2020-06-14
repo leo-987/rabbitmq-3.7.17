@@ -344,7 +344,7 @@ cast({global,Name}, Request) ->
 cast({Name,Node}=Dest, Request) when is_atom(Name), is_atom(Node) ->
     catch (Dest ! {'$gen_cast', Request}),
     ok;
-cast(Dest, Request) when is_atom(Dest); is_pid(Dest) ->
+cast(Dest, Request) when is_atom(Dest); is_pid(Dest) -> % 关卡序列，只要其中一个关卡的值为 true，它的值就为 true
     catch (Dest ! {'$gen_cast', Request}),
     ok.
 

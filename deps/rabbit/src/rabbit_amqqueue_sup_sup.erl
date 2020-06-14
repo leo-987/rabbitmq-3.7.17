@@ -43,7 +43,7 @@ start_link() ->
 start_queue_process(Node, Q, StartMode) ->
     #amqqueue{name = #resource{virtual_host = VHost}} = Q,
     {ok, Sup} = find_for_vhost(VHost, Node),
-    {ok, _SupPid, QPid} = supervisor2:start_child(Sup, [Q, StartMode]),
+    {ok, _SupPid, QPid} = supervisor2:start_child(Sup, [Q, StartMode]), % 调用 rabbit_amqqueue_sup:start_link
     QPid.
 
 init([]) ->

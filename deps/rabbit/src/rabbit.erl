@@ -1021,11 +1021,13 @@ boot_delegate() ->
     {ok, Count} = application:get_env(rabbit, delegate_count),
     rabbit_sup:start_supervisor_child(delegate_sup, [Count]).
 
+% 从 rabbit_boot_step 调过来的
 recover() ->
-    ok = rabbit_policy:recover(),
+    ok = rabbit_policy:recover(), % 不知道干嘛的，先忽略
     ok = rabbit_vhost:recover(),
     ok = lager_exchange_backend:maybe_init_exchange().
 
+% 启动的时候调用
 maybe_insert_default_data() ->
     case rabbit_table:needs_default_data() of
         true  -> insert_default_data();
@@ -1033,12 +1035,12 @@ maybe_insert_default_data() ->
     end.
 
 insert_default_data() ->
-    {ok, DefaultUser} = application:get_env(default_user),
-    {ok, DefaultPass} = application:get_env(default_pass),
-    {ok, DefaultTags} = application:get_env(default_user_tags),
-    {ok, DefaultVHost} = application:get_env(default_vhost),
+    {ok, DefaultUser} = application:get_env(default_user),  % 默认值 <<"guest">>
+    {ok, DefaultPass} = application:get_env(default_pass),  % 默认值 <<"guest">>
+    {ok, DefaultTags} = application:get_env(default_user_tags), % 默认值 [administrator]
+    {ok, DefaultVHost} = application:get_env(default_vhost),    % <<"/">>
     {ok, [DefaultConfigurePerm, DefaultWritePerm, DefaultReadPerm]} =
-        application:get_env(default_permissions),
+        application:get_env(default_permissions), % [<<".*">>,<<".*">>,<<".*">>]
 
     DefaultUserBin = rabbit_data_coercion:to_binary(DefaultUser),
     DefaultPassBin = rabbit_data_coercion:to_binary(DefaultPass),

@@ -38,7 +38,7 @@ start_link(Q, StartMode) ->
                  intrinsic, ?WORKER_WAIT, worker, [rabbit_amqqueue_process,
                                                 rabbit_mirror_queue_slave]},
     {ok, SupPid} = supervisor2:start_link(?MODULE, []),
-    {ok, QPid} = supervisor2:start_child(SupPid, ChildSpec),
+    {ok, QPid} = supervisor2:start_child(SupPid, ChildSpec),  % 调用 rabbit_prequeue:start_link
     unlink(Marker),
     Marker ! stop,
     {ok, SupPid, QPid}.

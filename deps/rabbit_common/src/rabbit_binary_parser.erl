@@ -146,6 +146,7 @@ parse_array(<<$x, VLen:32/unsigned, Value:VLen/binary, Rest/binary>>) ->
 parse_array(<<$V, Rest/binary>>) ->
     [{void, undefined} | parse_array(Rest)].
 
+% 实际上是检查参数 Content 中的 Props 不能为空
 ensure_content_decoded(Content = #content{properties = Props})
   when Props =/= none ->
     Content;

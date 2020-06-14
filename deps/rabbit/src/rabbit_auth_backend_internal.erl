@@ -161,6 +161,8 @@ check_vhost_access(#auth_user{username = Username}, VHostPath, _Sock) ->
         [_R] -> true
     end.
 
+% 从 mnesia rabbit_user_permission 表中读取 resource 权限并进行检查
+% resource 包括 vhost，queue，exchange 等资源
 check_resource_access(#auth_user{username = Username},
                       #resource{virtual_host = VHostPath, name = Name},
                       Permission) ->
@@ -168,19 +170,20 @@ check_resource_access(#auth_user{username = Username},
                             #user_vhost{username     = Username,
                                         virtual_host = VHostPath}}) of
         [] ->
-            false;
+            false;  % 没有设置权限则默认校验失败
         [#user_permission{permission = P}] ->
             PermRegexp = case element(permission_index(Permission), P) of
                              %% <<"^$">> breaks Emacs' erlang mode
                              <<"">> -> <<$^, $$>>;
                              RE     -> RE
                          end,
-            case re:run(Name, PermRegexp, [{capture, none}]) of
+            case re:run(Name, PermRegexp, [{capture, none}]) of % 判断资源名是否在预置的权限列表中
                 match    -> true;
                 nomatch  -> false
             end
     end.
 
+% 从 mnesia rabbit_topic_permission 表中读取 topic exchange 权限进行
 check_topic_access(#auth_user{username = Username},
                    #resource{virtual_host = VHostPath, name = Name, kind = topic},
                    Permission,
@@ -191,17 +194,20 @@ check_topic_access(#auth_user{username = Username},
                                                        exchange     = Name
                              }}) of
         [] ->
-            true;
-        [#topic_permission{permission = P}] ->
-            PermRegexp = case element(permission_index(Permission), P) of
+            true; % 没有权限数据，默认通过
+        [#topic_permission{permission = P}] ->  % 把 username + vhost + exchange_name 对应的权限拿出来
+            PermRegexp = case element(permission_index(Permission), P) of % 提取出当前操作（configure/read/write）对应的权限
                              %% <<"^$">> breaks Emacs' erlang mode
                              <<"">> -> <<$^, $$>>;
                              RE     -> RE
                          end,
+            % 对预置权限展开，一般情况下只对 vhost 和 username 进行设置
+            % 例如当前用户名为 tonyg，那么预置权限 ^{username}-.* 将会被替换为 ^tonyg-.*
             PermRegexpExpanded = expand_topic_permission(
                 PermRegexp,
-                maps:get(variable_map, Context, undefined)
+                maps:get(variable_map, Context, undefined)  % 从 Context 中取出 key=variable_map 的 value，实际是 #{<<"vhost">> => VHost, <<"username">> => Username}
             ),
+            % 用消息中的 routing key 去匹配展开后的预置权限，存在返回 match，不存在返回 nomatch
             case re:run(maps:get(routing_key, Context), PermRegexpExpanded, [{capture, none}]) of
                 match    -> true;
                 nomatch  -> false
@@ -212,13 +218,14 @@ expand_topic_permission(Permission, ToExpand) when is_map(ToExpand) ->
     Opening = <<"{">>,
     Closing = <<"}">>,
     ReplaceFun = fun(K, V, Acc) ->
-                    Placeholder = <<Opening/binary, K/binary, Closing/binary>>,
-                    binary:replace(Acc, Placeholder, V, [global])
+                    Placeholder = <<Opening/binary, K/binary, Closing/binary>>, % <<"{vhost}">> 或者 <<"{username}">>
+                    binary:replace(Acc, Placeholder, V, [global]) % 将 <<"{vhost}">> 和 <<"{username}">> 替换成真是的 vhost 和 username
                  end,
-    maps:fold(ReplaceFun, Permission, ToExpand);
+    maps:fold(ReplaceFun, Permission, ToExpand);  % 遍历 ToExpand，调用 ReplaceFun，累积器是 Permission
 expand_topic_permission(Permission, _ToExpand) ->
     Permission.
 
+% 返回 record 字段的下标
 permission_index(configure) -> #permission.configure;
 permission_index(write)     -> #permission.write;
 permission_index(read)      -> #permission.read.
@@ -343,6 +350,7 @@ set_tags(Username, Tags, ActingUser) ->
                                         {user_who_performed_action, ActingUser}]),
     R.
 
+% 启动的时候会调这个函数设置默认权限，使用工具也会调过来
 set_permissions(Username, VHostPath, ConfigurePerm, WritePerm, ReadPerm, ActingUser) ->
     rabbit_log:info("Setting permissions for "
                     "'~s' in '~s' to '~s', '~s', '~s'~n",
@@ -402,6 +410,7 @@ update_user(Username, Fun) ->
                 ok = mnesia:write(rabbit_user, Fun(User), write)
         end)).
 
+% 通过 rabbitmqctl 设置 topic exchange 访问权限，权限保存在 rabbit_topic_permission 表中
 set_topic_permissions(Username, VHostPath, Exchange, WritePerm, ReadPerm, ActingUser) ->
     WritePermRegex = rabbit_data_coercion:to_binary(WritePerm),
     ReadPermRegex = rabbit_data_coercion:to_binary(ReadPerm),
