@@ -564,6 +564,7 @@ handle_cast({method, Method, Content, Flow},
         noflow -> ok
     end,
 
+    % 入口
     try handle_method(rabbit_channel_interceptor:intercept_in(
                         expand_shortcuts(Method, State), Content, IState),
                       State) of
@@ -738,6 +739,7 @@ handle_pre_hibernate(State) ->
                 end),
     {hibernate, rabbit_event:stop_stats_timer(State, #ch.stats_timer)}.
 
+% rabbit_channel 模块作为 gen_server 的回调模块，当 gen_server 退出时会调用 terminate 函数
 terminate(_Reason, State = #ch{user = #user{username = Username}}) ->
     {_Res, _State1} = notify_queues(State),
     pg_local:leave(rabbit_channels, self()),
@@ -823,33 +825,41 @@ return_queue_declare_ok(#resource{name = ActualName},
                                   consumer_count = ConsumerCount}).
 
 check_resource_access(User, Resource, Perm) ->
+    % {Resource, Perm} = {{virtual_host, kind, name}, configure/write/read}
+    % 可以看出 resource 校验时针对某个 vhost 下面的某类 resource，对它的操作类型进行校验
     V = {Resource, Perm},
-    Cache = case get(permission_cache) of
+    Cache = case get(permission_cache) of % 先从进程字典里获取身份认证结果
                 undefined -> [];
                 Other     -> Other
             end,
-    case lists:member(V, Cache) of
+    case lists:member(V, Cache) of  % 判断元素 V 是否是列表 Cache 里的成员
         true  -> ok;
-        false -> ok = rabbit_access_control:check_resource_access(
+        false -> ok = rabbit_access_control:check_resource_access(  % 如果校验失败，check_resource_access 内部调用 exit 抛出异常
                         User, Resource, Perm),
-                 CacheTail = lists:sublist(Cache, ?MAX_PERMISSION_CACHE_SIZE-1),
-                 put(permission_cache, [V | CacheTail])
+                 CacheTail = lists:sublist(Cache, ?MAX_PERMISSION_CACHE_SIZE-1),  % 截取从第一个元素到第 11 个元素的列表，即淘汰尾部 cache
+                 put(permission_cache, [V | CacheTail]) % 把身份认证成功的结果存入进程字典
     end.
 
 clear_permission_cache() -> erase(permission_cache),
                             erase(topic_permission_cache),
                             ok.
 
+% 没有权限会抛出异常
 check_configure_permitted(Resource, User) ->
     check_resource_access(User, Resource, configure).
 
+% 没有权限会抛出异常
 check_write_permitted(Resource, User) ->
     check_resource_access(User, Resource, write).
 
+% 没有权限会抛出异常
 check_read_permitted(Resource, User) ->
     check_resource_access(User, Resource, read).
 
-check_write_permitted_on_topic(Resource, User, ConnPid, RoutingKey, ChSrc) ->
+% topic 权限，如果开启了此功能，就会把消息中的 routing key 和设置的规则做比较，以决定是否继续向下投递此消息，默认为开启
+% 概念：https://www.rabbitmq.com/access-control.html#topic-authorisation
+% 如何设置：https://www.rabbitmq.com/rabbitmqctl.8.html#set_topic_permissions
+check_write_permitted_on_topic(Resource, User, ConnPid, RoutingKey, ChSrc) -> % basic.publish 调这里
     check_topic_authorisation(Resource, User, ConnPid, RoutingKey, ChSrc, write).
 
 check_read_permitted_on_topic(Resource, User, ConnPid, RoutingKey, ChSrc) ->
@@ -864,6 +874,7 @@ check_user_id_header(
   #'P_basic'{}, #ch{user = #user{authz_backends =
                                      [{rabbit_auth_backend_dummy, _}]}}) ->
     ok;
+% https://www.rabbitmq.com/validated-user-id.html
 check_user_id_header(#'P_basic'{user_id = Claimed},
                      #ch{user = #user{username = Actual,
                                       tags     = Tags}}) ->
@@ -881,6 +892,7 @@ check_expiration_header(Props) ->
                                           [Props#'P_basic'.expiration, E])
     end.
 
+% 禁止操作内部 exchange
 check_internal_exchange(#exchange{name = Name, internal = true}) ->
     rabbit_misc:protocol_error(access_refused,
                                "cannot publish to internal ~s",
@@ -888,38 +900,43 @@ check_internal_exchange(#exchange{name = Name, internal = true}) ->
 check_internal_exchange(_) ->
     ok.
 
+% 暂时没有找到调用方，估计是管理端调用的
 check_topic_authorisation(Resource = #exchange{type = topic},
                           User, none, RoutingKey, _ChSrc, Permission) ->
     %% Called from outside the channel by mgmt API
     AmqpParams = [],
     check_topic_authorisation(Resource, User, AmqpParams, RoutingKey, Permission);
+
+% 如果是发送消息到 topic exchange，匹配该函数进行校验
 check_topic_authorisation(Resource = #exchange{type = topic},
                           User, ConnPid, RoutingKey, ChSrc, Permission) when is_pid(ConnPid) ->
-    AmqpParams = get_amqp_params(ConnPid, ChSrc),
+    AmqpParams = get_amqp_params(ConnPid, ChSrc), % 返回 []
     check_topic_authorisation(Resource, User, AmqpParams, RoutingKey, Permission);
+
+% 如果是发送消息到非 topic exchange，直接跳过校验
 check_topic_authorisation(_, _, _, _, _, _) ->
     ok.
 
 check_topic_authorisation(#exchange{name = Name = #resource{virtual_host = VHost}, type = topic},
                           User = #user{username = Username},
                           AmqpParams, RoutingKey, Permission) ->
-    Resource = Name#resource{kind = topic},
-    VariableMap = build_topic_variable_map(AmqpParams, VHost, Username),
+    Resource = Name#resource{kind = topic}, % 更新记录的 kind 字段
+    VariableMap = build_topic_variable_map(AmqpParams, VHost, Username),  % 返回 #{<<"vhost">> => VHost, <<"username">> => Username}
     Context = #{routing_key  => RoutingKey,
                 variable_map => VariableMap},
-    Cache = case get(topic_permission_cache) of
+    Cache = case get(topic_permission_cache) of % 先从进程字典里获取 topic 认证结果
                 undefined -> [];
                 Other     -> Other
             end,
-    case lists:member({Resource, Context, Permission}, Cache) of
+    case lists:member({Resource, Context, Permission}, Cache) of  % 判断 tuple 是否在 cache 中
         true  -> ok;
-        false -> ok = rabbit_access_control:check_topic_access(
+        false -> ok = rabbit_access_control:check_topic_access( % 如果校验失败，check_topic_access 内部会抛出异常
             User, Resource, Permission, Context),
-            CacheTail = lists:sublist(Cache, ?MAX_PERMISSION_CACHE_SIZE-1),
-            put(topic_permission_cache, [{Resource, Context, Permission} | CacheTail])
+            CacheTail = lists:sublist(Cache, ?MAX_PERMISSION_CACHE_SIZE-1), % 截取从第一个元素到第 11 个元素的列表，即淘汰尾部 cache
+            put(topic_permission_cache, [{Resource, Context, Permission} | CacheTail])  % 走到这里，一定是校验成功的，可以存入缓存，后面就不用重复校验了
     end.
 
-get_amqp_params(_ConnPid, rabbit_reader) -> [];
+get_amqp_params(_ConnPid, rabbit_reader) -> []; % 前端是 rabbit_reader 就直接返回空列表了
 get_amqp_params(ConnPid, _Any) when is_pid(ConnPid) ->
     Timeout = get_operation_timeout(),
     get_amqp_params(ConnPid, rabbit_misc:is_process_alive(ConnPid), Timeout).
@@ -934,7 +951,7 @@ get_amqp_params(ConnPid, true, Timeout) ->
 
 build_topic_variable_map(AmqpParams, VHost, Username) ->
     VariableFromAmqpParams = extract_topic_variable_map_from_amqp_params(AmqpParams),
-    maps:merge(VariableFromAmqpParams, #{<<"vhost">> => VHost, <<"username">> => Username}).
+    maps:merge(VariableFromAmqpParams, #{<<"vhost">> => VHost, <<"username">> => Username}).  % 合并两个映射组
 
 %% use tuple representation of amqp_params to avoid coupling.
 %% get variable map only from amqp_params_direct, not amqp_params_network.
@@ -943,7 +960,7 @@ extract_topic_variable_map_from_amqp_params([{amqp_params, {amqp_params_direct, 
                                              {amqp_adapter_info, _,_,_,_,_,_,AdditionalInfo}, _}}]) ->
     proplists:get_value(variable_map, AdditionalInfo, #{});
 extract_topic_variable_map_from_amqp_params(_) ->
-    #{}.
+    #{}.  % 返回空映射组
 
 check_msg_size(Content) ->
     Size = rabbit_basic:maybe_gc_large_msg(Content),
@@ -953,6 +970,7 @@ check_msg_size(Content) ->
         false -> ok
     end.
 
+% 检查 VHost 队列数是否达到上限
 check_vhost_queue_limit(#resource{name = QueueName}, VHost) ->
   case rabbit_vhost_limit:is_over_queue_limit(VHost) of
     false         -> ok;
@@ -1124,46 +1142,46 @@ handle_method(#'basic.publish'{immediate = true}, _Content, _State) ->
 handle_method(#'basic.publish'{exchange    = ExchangeNameBin,
                                routing_key = RoutingKey,
                                mandatory   = Mandatory},
-              Content, State = #ch{virtual_host    = VHostPath,
+              Content, State = #ch{virtual_host    = VHostPath, % VHostPath = <<"/">>
                                    tx              = Tx,
                                    channel         = ChannelNum,
                                    confirm_enabled = ConfirmEnabled,
                                    trace_state     = TraceState,
-                                   user            = #user{username = Username} = User,
+                                   user            = #user{username = Username} = User, % User = {user,username=<<"guest">>,tags=[administrator],authz_backends=[{rabbit_auth_backend_internal,none}]}
                                    conn_name       = ConnName,
                                    delivery_flow   = Flow,
-                                   conn_pid        = ConnPid,
-                                   source          = ChSrc}) ->
-    check_msg_size(Content),
-    ExchangeName = rabbit_misc:r(VHostPath, exchange, ExchangeNameBin),
-    check_write_permitted(ExchangeName, User),
-    Exchange = rabbit_exchange:lookup_or_die(ExchangeName),
-    check_internal_exchange(Exchange),
-    check_write_permitted_on_topic(Exchange, User, ConnPid, RoutingKey, ChSrc),
+                                   conn_pid        = ConnPid, % rabbit_reader pid
+                                   source          = ChSrc}) -> % ChSrc = rabbit_reader
+    check_msg_size(Content),  % 检查消息大小
+    ExchangeName = rabbit_misc:r(VHostPath, exchange, ExchangeNameBin), % vhost + kind(exchange/queue/...) + name
+    check_write_permitted(ExchangeName, User),  % @basic.publish
+    Exchange = rabbit_exchange:lookup_or_die(ExchangeName), % 返回 exchange 类型的 record
+    check_internal_exchange(Exchange),  % 检查是否为内部 exchange，操作内部 exchange 会抛出异常
+    check_write_permitted_on_topic(Exchange, User, ConnPid, RoutingKey, ChSrc), % 检查 topic 是否授权
     %% We decode the content's properties here because we're almost
     %% certain to want to look at delivery-mode and priority.
-    DecodedContent = #content {properties = Props} =
+    DecodedContent = #content {properties = Props} =  % 主要是把 properties 字段匹配出来
         maybe_set_fast_reply_to(
           rabbit_binary_parser:ensure_content_decoded(Content), State),
-    check_user_id_header(Props, State),
-    check_expiration_header(Props),
+    check_user_id_header(Props, State), % 检查 Props 中的 user_id 字段的合法性，不合法会抛出异常
+    check_expiration_header(Props), % 检查消息 TTL 参数的合法性，不合法会抛出异常
     DoConfirm = Tx =/= none orelse ConfirmEnabled,
     {MsgSeqNo, State1} =
         case DoConfirm orelse Mandatory of
-            false -> {undefined, State};
+            false -> {undefined, State};  % 非确认模式无需设置消息序号
             true  -> SeqNo = State#ch.publish_seqno,
-                     {SeqNo, State#ch{publish_seqno = SeqNo + 1}}
+                     {SeqNo, State#ch{publish_seqno = SeqNo + 1}} % 更新消息序号
         end,
-    case rabbit_basic:message(ExchangeName, RoutingKey, DecodedContent) of
+    case rabbit_basic:message(ExchangeName, RoutingKey, DecodedContent) of  % 封装 basic_message record
         {ok, Message} ->
-            Delivery = rabbit_basic:delivery(
+            Delivery = rabbit_basic:delivery( % 封装一个 delivery record
                          Mandatory, DoConfirm, Message, MsgSeqNo),
-            QNames = rabbit_exchange:route(Exchange, Delivery),
+            QNames = rabbit_exchange:route(Exchange, Delivery), % 根据 exchange 找到对应的 queue，返回的列表包含 queue 类型的 resource：[{resource,<<"/">>,queue,<<"test_queue">>}]
             rabbit_trace:tap_in(Message, QNames, ConnName, ChannelNum,
                                 Username, TraceState),
             DQ = {Delivery#delivery{flow = Flow}, QNames},
             {noreply, case Tx of
-                          none         -> deliver_to_queues(DQ, State1);
+                          none         -> deliver_to_queues(DQ, State1);  % 消息发往 queue
                           {Msgs, Acks} -> Msgs1 = queue:in(DQ, Msgs),
                                           State1#ch{tx = {Msgs1, Acks}}
                       end};
@@ -1898,7 +1916,7 @@ notify_limiter(Limiter, Acked) ->
 deliver_to_queues({#delivery{message   = #basic_message{exchange_name = XName},
                              confirm   = false,
                              mandatory = false},
-                   []}, State) -> %% optimisation
+                   []}, State) -> %% optimisation 第一个参数中的 [] 表示没有需要发往的队列
     ?INCR_STATS(exchange_stats, XName, 1, publish, State),
     State;
 deliver_to_queues({Delivery = #delivery{message    = Message = #basic_message{
@@ -1908,7 +1926,7 @@ deliver_to_queues({Delivery = #delivery{message    = Message = #basic_message{
                                         msg_seq_no = MsgSeqNo},
                    DelQNames}, State = #ch{queue_names    = QNames,
                                            queue_monitors = QMons}) ->
-    Qs = rabbit_amqqueue:lookup(DelQNames),
+    Qs = rabbit_amqqueue:lookup(DelQNames), % 返回包含 amqqueue 记录的列表
     DeliveredQPids = rabbit_amqqueue:deliver(Qs, Delivery),
     %% The pmon:monitor_all/2 monitors all queues to which we
     %% delivered. But we want to monitor even queues we didn't deliver
@@ -2149,7 +2167,7 @@ put_operation_timeout() ->
     put(channel_operation_timeout, ?CHANNEL_OPERATION_TIMEOUT).
 
 get_operation_timeout() ->
-    get(channel_operation_timeout).
+    get(channel_operation_timeout). % 从进程字典获取超时时间，默认 15s
 
 %% Refactored and exported to allow direct calls from the HTTP API,
 %% avoiding the usage of AMQP 0-9-1 from the management.

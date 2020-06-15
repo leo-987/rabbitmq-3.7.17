@@ -61,6 +61,7 @@ start_link({tcp, Sock, Channel, FrameMax, ReaderPid, ConnName, Protocol, User,
     [LimiterPid] = supervisor2:find_child(SupPid, limiter),
     [WriterPid] = supervisor2:find_child(SupPid, writer),
     {ok, ChannelPid} =
+        % 启动子进程 rabbit_channel:start_link 并被加入到监控进程 SupPid 的监控之下
         supervisor2:start_child(
           SupPid,
           {channel, {rabbit_channel, start_link,

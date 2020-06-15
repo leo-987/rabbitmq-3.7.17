@@ -36,7 +36,8 @@
 -rabbit_boot_step({?MODULE,
                    [{description, "connection tracking event handler"},
                     {mfa,         {gen_event, add_handler,
-                                   [rabbit_event, ?MODULE, []]}},
+                                   [rabbit_event, ?MODULE, []]}}, % add_handler 需要三个参数：EventMgrRef，Handler，Args，表示向 rabbit_event 注册本回调模块
+                                                                  % 其他进程向 rabbit_event notify 就会模式匹配本模块的 handle_event
                     {cleanup,     {gen_event, delete_handler,
                                    [rabbit_event, ?MODULE, []]}},
                     {requires,    [rabbit_connection_tracking]},
