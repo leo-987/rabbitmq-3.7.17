@@ -97,10 +97,10 @@ start_link() -> gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 %% otherwise.
 
 running_nodes_filename() ->
-    filename:join(rabbit_mnesia:dir(), "nodes_running_at_shutdown").
+    filename:join(rabbit_mnesia:dir(), "nodes_running_at_shutdown").  % 保存正常运行的节点名，格式为 [nodes]
 
 cluster_status_filename() ->
-    rabbit_mnesia:dir() ++ "/cluster_nodes.config".
+    rabbit_mnesia:dir() ++ "/cluster_nodes.config". % 保存集群所有节点名和 disk 节点名，包括未运行的节点，格式为 {[nodes],[disc nodes]}
 
 prepare_cluster_status_files() ->
     rabbit_mnesia:ensure_mnesia_dir(),
@@ -367,7 +367,7 @@ handle_call(partitions, _From, State = #state{partitions = Partitions}) ->
 
 handle_call(status, _From, State = #state{partitions = Partitions}) ->
     {reply, [{partitions, Partitions},
-             {nodes,      [node() | nodes()]}], State};
+             {nodes,      [node() | nodes()]}], State}; % nodes() 返回在系统里除了本地节点之外的其他可连接访问的一个节点列表
 
 handle_call(_Request, _From, State) ->
     {noreply, State}.
@@ -503,6 +503,7 @@ handle_cast({partial_partition_disconnect, Other}, State) ->
 %% Note: when updating the status file, we can't simply write the
 %% mnesia information since the message can (and will) overtake the
 %% mnesia propagation.
+%% 其他节点启动或恢复后调用这里
 handle_cast({node_up, Node, NodeType},
             State = #state{monitors = Monitors}) ->
     rabbit_log:info("rabbit on node ~p up~n", [Node]),
@@ -547,22 +548,27 @@ handle_cast(keepalive, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+% 发现集群中有节点宕机或失联
 handle_info({'DOWN', _MRef, process, {rabbit, Node}, _Reason},
             State = #state{monitors = Monitors, subscribers = Subscribers}) ->
     rabbit_log:info("rabbit on node ~p down~n", [Node]),
-    {AllNodes, DiscNodes, RunningNodes} = read_cluster_status(),
-    write_cluster_status({AllNodes, DiscNodes, del_node(Node, RunningNodes)}),
-    [P ! {node_down, Node} || P <- pmon:monitored(Subscribers)],
+    {AllNodes, DiscNodes, RunningNodes} = read_cluster_status(),  % 从文件读出所有节点，所有磁盘节点，所有正在运行的节点
+    write_cluster_status({AllNodes, DiscNodes, del_node(Node, RunningNodes)}),  % 更新保存了存活节点的文件
+    [P ! {node_down, Node} || P <- pmon:monitored(Subscribers)],  % 告知所有订阅者 Node 已经挂掉了
     {noreply, handle_dead_rabbit(
                 Node,
-                State#state{monitors = pmon:erase({rabbit, Node}, Monitors)})};
+                State#state{monitors = pmon:erase({rabbit, Node}, Monitors)})}; % 取消对 Node 的监控
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason},
             State = #state{subscribers = Subscribers}) ->
     {noreply, State#state{subscribers = pmon:erase(Pid, Subscribers)}};
 
+% 处理有节点宕机的消息
 handle_info({nodedown, Node, Info}, State = #state{guid       = MyGUID,
                                                    node_guids = GUIDs}) ->
+    % 打印节点名称和 down 的原因，例如：
+    % connection_closed 表示正常关闭
+    % net_tick_timeout 表示分区超过 60s（4个tick）未收到应答
     rabbit_log:info("node ~p down: ~p~n",
                     [Node, proplists:get_value(nodedown_reason, Info)]),
     Check = fun (N, CheckGUID, DownGUID) ->
@@ -584,6 +590,9 @@ handle_info({nodeup, Node, _Info}, State) ->
     rabbit_log:info("node ~p up~n", [Node]),
     {noreply, State};
 
+% mnesia 系统事件
+% 对端启动后发现曾经发生过分区，数据库有过不一致，分区恢复后可以搜到 running_partitioned_network 日志
+% 如果是 autoheal 模式，那么可能会执行一轮 autoheal 重启某些 loser 节点
 handle_info({mnesia_system_event,
              {inconsistent_database, running_partitioned_network, Node}},
             State = #state{partitions = Partitions,
@@ -662,8 +671,8 @@ handle_dead_node(Node, State = #state{autoheal = Autoheal}) ->
     %% based on the rabbit application we would go down and never come
     %% back.
     case application:get_env(rabbit, cluster_partition_handling) of
-        {ok, pause_minority} ->
-            case majority([Node]) of
+        {ok, pause_minority} -> % pause-minority 模式，多数派节点正常服务，少数派节点主动 stop_app
+            case majority([Node]) of  % 判断自己是否在少数派分区中
                 true  -> ok;
                 false -> await_cluster_recovery(fun majority/0)
             end,
@@ -754,6 +763,7 @@ wait_for_cluster_recovery(Condition) ->
                  wait_for_cluster_recovery(Condition)
     end.
 
+% 清除宕机节点相关信息，更新内部状态
 handle_dead_rabbit(Node, State = #state{partitions = Partitions,
                                         autoheal   = Autoheal}) ->
     %% TODO: This may turn out to be a performance hog when there are
@@ -865,6 +875,7 @@ disconnect(Node) ->
 majority() ->
     majority([]).
 
+% 判断自己是否在过半节点分区中
 majority(NodesDown) ->
     Nodes = rabbit_mnesia:cluster_nodes(all),
     AliveNodes = alive_nodes(Nodes) -- NodesDown,

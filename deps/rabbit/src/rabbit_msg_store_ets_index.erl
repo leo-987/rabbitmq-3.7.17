@@ -25,18 +25,18 @@
          delete_object/2, clean_up_temporary_reference_count_entries_without_file/1, terminate/1]).
 
 -define(MSG_LOC_NAME, rabbit_msg_store_ets_index).
--define(FILENAME, "msg_store_index.ets").
+-define(FILENAME, "msg_store_index.ets").   % 实例正常关闭时生成
 
 -record(state, { table, dir }).
 
 new(Dir) ->
     file:delete(filename:join(Dir, ?FILENAME)),
-    Tid = ets:new(?MSG_LOC_NAME, [set, public, {keypos, #msg_location.msg_id}]),
+    Tid = ets:new(?MSG_LOC_NAME, [set, public, {keypos, #msg_location.msg_id}]),    % msg_location 是消息的索引信息
     #state { table = Tid, dir = Dir }.
 
 recover(Dir) ->
-    Path = filename:join(Dir, ?FILENAME),
-    case ets:file2tab(Path) of
+    Path = filename:join(Dir, ?FILENAME),   % Path = /xxx/msg_store_persistent/msg_store_index.ets
+    case ets:file2tab(Path) of  % 从一个文件读取一个 ets 表
         {ok, Tid}  -> file:delete(Path),
                       {ok, #state { table = Tid, dir = Dir }};
         Error      -> Error
@@ -73,6 +73,7 @@ clean_up_temporary_reference_count_entries_without_file(State) ->
     ets:select_delete(State #state.table, [{MatchHead, [], [true]}]),
     ok.
 
+% 实例正常退出时调到这里，把内存中的消息索引写到 msg_store_index.ets 文件中
 terminate(#state { table = MsgLocations, dir = Dir }) ->
     case ets:tab2file(MsgLocations, filename:join(Dir, ?FILENAME),
                       [{extended_info, [object_count]}]) of

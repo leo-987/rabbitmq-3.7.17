@@ -40,6 +40,9 @@ description() ->
 
 serialise_events() -> false.
 
+% 1. 从 #exchange 中取出 exchange 类型的 resource
+% 2. 从 #delivery -> #basic_message 中取出 routing key
+% 3. 从 ets 中找出绑定的 queue 类型的 resource
 route(#exchange{name = Name},
       #delivery{message = #basic_message{routing_keys = Routes}}) ->
     rabbit_router:match_routing_key(Name, Routes).

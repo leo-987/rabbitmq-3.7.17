@@ -37,8 +37,8 @@
 -include("rabbit_msg_store.hrl").
 
 -define(SYNC_INTERVAL,  25).   %% milliseconds
--define(CLEAN_FILENAME, "clean.dot").
--define(FILE_SUMMARY_FILENAME, "file_summary.ets").
+-define(CLEAN_FILENAME, "clean.dot"). % 实例正常关闭时生成
+-define(FILE_SUMMARY_FILENAME, "file_summary.ets"). % 实例正常关闭时生成
 -define(TRANSFORM_TMP, "transform_tmp").
 
 -define(BINARY_MODE,     [raw, binary]).
@@ -469,15 +469,16 @@
 %% public API
 %%----------------------------------------------------------------------------
 
+% 被 rabbit_vhost_msg_store 调用并管理
 start_link(Type, Dir, ClientRefs, StartupFunState) when is_atom(Type) ->
     gen_server2:start_link(?MODULE,
-                           [Type, Dir, ClientRefs, StartupFunState],
-                           [{timeout, infinity}]).
+                           [Type, Dir, ClientRefs, StartupFunState],  % 传入 init 的参数列表
+                           [{timeout, infinity}]).  % 执行 init 初始化允许的时间，infinity 表示无限等待
 
 start_global_store_link(Type, Dir, ClientRefs, StartupFunState) when is_atom(Type) ->
     gen_server2:start_link({local, Type}, ?MODULE,
-                           [Type, Dir, ClientRefs, StartupFunState],
-                           [{timeout, infinity}]).
+                           [Type, Dir, ClientRefs, StartupFunState],  % 传入 init 的参数列表
+                           [{timeout, infinity}]).  % 执行 init 初始化允许的时间，infinity 表示无限等待
 
 successfully_recovered_state(Server) ->
     gen_server2:call(Server, successfully_recovered_state, infinity).
@@ -718,14 +719,16 @@ init([Type, BaseDir, ClientRefs, StartupFunState]) ->
     Dir = filename:join(BaseDir, atom_to_list(Type)),
     Name = filename:join(filename:basename(BaseDir), atom_to_list(Type)),
 
-    {ok, IndexModule} = application:get_env(rabbit, msg_store_index_module),
+    {ok, IndexModule} = application:get_env(rabbit, msg_store_index_module),  % 实际指向 rabbit_msg_store_ets_index 模块
     rabbit_log:info("Message store ~tp: using ~p to provide index~n", [Name, IndexModule]),
 
     AttemptFileSummaryRecovery =
         case ClientRefs of
-            undefined -> ok = rabbit_file:recursive_delete([Dir]),
+            % 非持久化队列，从 rabbit_variable_queue:start_msg_store 传入的就是 undefined
+            undefined -> ok = rabbit_file:recursive_delete([Dir]),  % 清空 msg_store_transient 里面的文件，无需 recovery
                          ok = filelib:ensure_dir(filename:join(Dir, "nothing")),
                          false;
+            % 持久化队列，ClientRefs 是每一个队列的标识符，是一个列表
             _         -> ok = filelib:ensure_dir(filename:join(Dir, "nothing")),
                          recover_crashed_compactions(Dir)
         end,
@@ -742,6 +745,7 @@ init([Type, BaseDir, ClientRefs, StartupFunState]) ->
                     CRef <- ClientRefs1]),
     %% CleanShutdown => msg location index and file_summary both
     %% recovered correctly.
+    % 如果上一次非正常退出，也就是没有成功从 file_summary.ets 和 msg_store_index.ets 文件恢复数据，则删除 ets 表里的所有数据
     true = case {FileSummaryRecovered, CleanShutdown} of
                {true, false} -> ets:delete_all_objects(FileSummaryEts);
                _             -> true
@@ -1560,33 +1564,40 @@ index_clean_up_temporary_reference_count_entries(
 %% shutdown and recovery
 %%----------------------------------------------------------------------------
 
+% 非持久化队列
 recover_index_and_client_refs(IndexModule, _Recover, undefined, Dir, _Name) ->
     {false, IndexModule:new(Dir), []};
+
+% 无法从 file summary 恢复
 recover_index_and_client_refs(IndexModule, false, _ClientRefs, Dir, Name) ->
     rabbit_log:warning("Message store ~tp: rebuilding indices from scratch~n", [Name]),
     {false, IndexModule:new(Dir), []};
+
+% 可以从 file summary 恢复
 recover_index_and_client_refs(IndexModule, true, ClientRefs, Dir, Name) ->
+    % Dir = "/xxx/msg_store_persistent"
+    % Name = "628WB79CIFDYO9LJI6DKMI09L/msg_store_persistent"
     Fresh = fun (ErrorMsg, ErrorArgs) ->
                     rabbit_log:warning("Message store ~tp : " ++ ErrorMsg ++ "~n"
                                        "rebuilding indices from scratch~n",
                                        [Name | ErrorArgs]),
                     {false, IndexModule:new(Dir), []}
             end,
-    case read_recovery_terms(Dir) of
+    case read_recovery_terms(Dir) of  % 尝试读取 /xxx/msg_store_persistent/clean.dot 文件，读取成功后删除
         {false, Error} ->
             Fresh("failed to read recovery terms: ~p", [Error]);
         {true, Terms} ->
-            RecClientRefs  = proplists:get_value(client_refs, Terms, []),
-            RecIndexModule = proplists:get_value(index_module, Terms),
+            RecClientRefs  = proplists:get_value(client_refs, Terms, []), % 获取一个键值属性列表的值
+            RecIndexModule = proplists:get_value(index_module, Terms),    % 获取一个键值属性列表的值
             case (lists:sort(ClientRefs) =:= lists:sort(RecClientRefs)
                   andalso IndexModule =:= RecIndexModule) of
-                true  -> case IndexModule:recover(Dir) of
+                true  -> case IndexModule:recover(Dir) of % 调用 rabbit_msg_store_ets_index:recover
                              {ok, IndexState1} ->
                                  {true, IndexState1, ClientRefs};
                              {error, Error} ->
                                  Fresh("failed to recover index: ~p", [Error])
                          end;
-                false -> Fresh("recovery terms differ from present", [])
+                false -> Fresh("recovery terms differ from present", [])  % TODO: 这里调试出来是走的 false 分支，暂不清楚 ClientRefs 是什么含义
             end
     end.
 
@@ -1594,7 +1605,7 @@ store_recovery_terms(Terms, Dir) ->
     rabbit_file:write_term_file(filename:join(Dir, ?CLEAN_FILENAME), Terms).
 
 read_recovery_terms(Dir) ->
-    Path = filename:join(Dir, ?CLEAN_FILENAME),
+    Path = filename:join(Dir, ?CLEAN_FILENAME), % Path = /xxx/msg_store_persistent/clean.dot
     case rabbit_file:read_term_file(Path) of
         {ok, Terms}    -> case file:delete(Path) of
                               ok             -> {true,  Terms};
@@ -1607,6 +1618,7 @@ store_file_summary(Tid, Dir) ->
     ets:tab2file(Tid, filename:join(Dir, ?FILE_SUMMARY_FILENAME),
                       [{extended_info, [object_count]}]).
 
+% 非持久化数据
 recover_file_summary(false, _Dir) ->
     %% TODO: the only reason for this to be an *ordered*_set is so
     %% that a) maybe_compact can start a traversal from the eldest
@@ -1617,8 +1629,10 @@ recover_file_summary(false, _Dir) ->
     %% ditching the latter would be neater.
     {false, ets:new(rabbit_msg_store_file_summary,
                     [ordered_set, public, {keypos, #file_summary.file}])};
+
+% 持久化数据
 recover_file_summary(true, Dir) ->
-    Path = filename:join(Dir, ?FILE_SUMMARY_FILENAME),
+    Path = filename:join(Dir, ?FILE_SUMMARY_FILENAME),  % /xxx/msg_store_persistent/file_summary.ets
     case ets:file2tab(Path) of
         {ok, Tid}       -> ok = file:delete(Path),
                            {true, Tid};
@@ -1626,7 +1640,7 @@ recover_file_summary(true, Dir) ->
     end.
 
 count_msg_refs(Gen, Seed, State) ->
-    case Gen(Seed) of
+    case Gen(Seed) of % 调用 rabbit_queue_index:queue_index_walker
         finished ->
             ok;
         {_MsgId, 0, Next} ->
@@ -1711,8 +1725,10 @@ drop_contiguous_block_prefix([#msg_location { offset = ExpectedOffset,
 drop_contiguous_block_prefix(MsgsAfterGap, ExpectedOffset) ->
     {ExpectedOffset, MsgsAfterGap}.
 
+% 上一次实例是正常关闭，直接根据 file_summary.ets 文件读出来的信息恢复索引即可
 build_index(true, _StartupFunState,
             State = #msstate { file_summary_ets = FileSummaryEts }) ->
+    % 遍历 ets 表中的数据项，返回 file_summary 统计信息 {当前 rdq 文件大小, {rdq 文件有效数据总长度, rdq 文件总长度, 当前 rdq 文件}}
     ets:foldl(
       fun (#file_summary { valid_total_size = ValidTotalSize,
                            file_size        = FileSize,
@@ -1724,6 +1740,8 @@ build_index(true, _StartupFunState,
                            sum_file_size  = SumFileSize + FileSize,
                            current_file   = File }}
       end, {0, State}, FileSummaryEts);
+
+% 上一次实例是非正常关闭
 build_index(false, {MsgRefDeltaGen, MsgRefDeltaGenInit},
             State = #msstate { dir = Dir }) ->
     ok = count_msg_refs(MsgRefDeltaGen, MsgRefDeltaGenInit, State),

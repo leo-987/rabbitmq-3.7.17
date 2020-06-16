@@ -193,6 +193,7 @@ recover0() ->
        end) || Q = #amqqueue{name = Name} <- Qs],
     ok.
 
+% 正常情况下这个文件应该是不存在的
 invalid_file() ->
     filename:join(rabbit_mnesia:dir(), "policies_are_invalid").
 

@@ -41,7 +41,7 @@
                       -> rabbit_types:ok_pid_or_error().
 
 %%----------------------------------------------------------------------------
-
+% 由监控器 rabbit_amqqueue_sup 启动
 start_link(Q, StartMode, Marker) ->
     gen_server2:start_link(?MODULE, {Q, StartMode, Marker}, []).
 

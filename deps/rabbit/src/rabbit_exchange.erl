@@ -256,6 +256,12 @@ assert_args_equivalence(#exchange{ name = Name, arguments = Args },
 lookup(Name) ->
     rabbit_misc:dirty_read({rabbit_exchange, Name}).
 
+% 从 ets rabbit_exchange 中获得 exchange 记录，mnesia 中也有这份数据，从 ets 读是因为考虑性能
+% 例如执行：ets:lookup(rabbit_exchange,{resource,<<"/">>,exchange,<<"test_exchange">>})
+% 返回记录：{exchange,{resource,<<"/">>,exchange,<<"test_exchange">>},
+%                   direct,true,false,false,[],undefined,undefined,undefined,
+%                   {[],[]},
+%                   #{user => <<"guest">>}
 lookup_or_die(Name) ->
     case lookup(Name) of
         {ok, X}            -> X;
@@ -373,32 +379,37 @@ info_all(VHostPath, Items, Ref, AggregatorPid) ->
       AggregatorPid, Ref, fun(X) -> info(X, Items) end, list(VHostPath)).
 
 route(#exchange{name = #resource{virtual_host = VHost, name = RName} = XName,
-                decorators = Decorators} = X,
+                decorators = Decorators} = X, % decorators 默认为 {[],[]}
       #delivery{message = #basic_message{routing_keys = RKs}} = Delivery) ->
     case RName of
-        <<>> ->
+        <<>> -> % 没有指定 exchange 名字，返回名称和 routing key 相同的 queue 类型的 resource
             RKsSorted = lists:usort(RKs),
             [rabbit_channel:deliver_reply(RK, Delivery) ||
-                RK <- RKsSorted, virtual_reply_queue(RK)],
+                RK <- RKsSorted, virtual_reply_queue(RK)],  % rpc server 返回的相应，直接发给消费者
             [rabbit_misc:r(VHost, queue, RK) || RK <- RKsSorted,
                                                 not virtual_reply_queue(RK)];
-        _ ->
-            Decs = rabbit_exchange_decorator:select(route, Decorators),
-            lists:usort(route1(Delivery, Decs, {[X], XName, []}))
+        _ ->  % 指定了 exchange 名字，需要找到绑定的 queue
+            Decs = rabbit_exchange_decorator:select(route, Decorators), % Decs 默认为 [] 空列表
+            lists:usort(route1(Delivery, Decs, {[X], XName, []})) % XName 是一个 exchange 类型的 resource
     end.
 
 virtual_reply_queue(<<"amq.rabbitmq.reply-to.", _/binary>>) -> true;
 virtual_reply_queue(_)                                      -> false.
 
+% 下面两个函数的作用主要是根据 #exchange 和 Delivery 参数找出绑定的 queue，返回 queue 类型的 resource 列表
 route1(_, _, {[], _, QNames}) ->
     QNames;
 route1(Delivery, Decorators,
        {[X = #exchange{type = Type} | WorkList], SeenXs, QNames}) ->
-    ExchangeDests  = (type_to_module(Type)):route(X, Delivery),
-    DecorateDests  = process_decorators(X, Decorators, Delivery),
-    AlternateDests = process_alternate(X, ExchangeDests),
+    % 根据 exchange 类型在 ets 中查找对应的模块，例如 ets:lookup(rabbit_registry, {exchange, direct}).
+    % direct: rabbit_exchange_type_direct
+    % topic: rabbit_exchange_type_topic
+    % fanout: rabbit_exchange_type_fanout
+    ExchangeDests  = (type_to_module(Type)):route(X, Delivery), % 根据 exchange 和 routing key，返回 queue 类型的 resource 列表
+    DecorateDests  = process_decorators(X, Decorators, Delivery), % DecorateDests 默认是 []
+    AlternateDests = process_alternate(X, ExchangeDests), % 如果参数 ExchangeDests 不是 []，则返回 []
     route1(Delivery, Decorators,
-           lists:foldl(fun process_route/2, {WorkList, SeenXs, QNames},
+           lists:foldl(fun process_route/2, {WorkList, SeenXs, QNames}, % process_route 匹配最后一个子句
                        AlternateDests ++ DecorateDests  ++ ExchangeDests)).
 
 process_alternate(X = #exchange{name = XName}, []) ->
