@@ -137,7 +137,7 @@
 
 -define(REL_SEQ_BITS, 14).
 %% calculated as trunc(math:pow(2,?REL_SEQ_BITS))).
--define(SEGMENT_ENTRY_COUNT, 16384).
+-define(SEGMENT_ENTRY_COUNT, 16384).  % 一个 idx 文件中 entry 的最大个数
 
 %% seq only is binary 01 followed by 14 bits of rel seq id
 %% (range: 0 - 16383)
@@ -168,7 +168,7 @@
 -define(EMBEDDED_SIZE_BITS, (?EMBEDDED_SIZE_BYTES * 8)).
 
 %% 16 bytes for md5sum + 8 for expiry
--define(PUB_RECORD_BODY_BYTES, (?MSG_ID_BYTES + ?EXPIRY_BYTES + ?SIZE_BYTES)).
+-define(PUB_RECORD_BODY_BYTES, (?MSG_ID_BYTES + ?EXPIRY_BYTES + ?SIZE_BYTES)).  % 28 字节
 %% + 4 for size
 -define(PUB_RECORD_SIZE_BYTES, (?PUB_RECORD_BODY_BYTES + ?EMBEDDED_SIZE_BYTES)).
 
@@ -215,8 +215,8 @@
   %% segment file path (see also ?SEGMENT_EXTENSION)
   path,
   %% index operation log entries in this segment
-  journal_entries,
-  entries_to_segment,
+  journal_entries,    % journal entry 数组，下标用 RelSeq
+  entries_to_segment, % segment entry 数组，下标用 RelSeq
   %% counter of unacknowledged messages
   unacked
 }).
@@ -544,6 +544,7 @@ erase_index_dir(Dir) ->
         false -> ok
     end.
 
+% 新建一个 qistate 记录，这个记录很重要
 blank_state(QueueName) ->
     Dir = queue_dir(QueueName),
     blank_state_name_dir_funs(QueueName,
@@ -571,6 +572,7 @@ queue_name_to_dir_name_legacy(Name = #resource { kind = queue }) ->
 queues_base_dir() ->
     rabbit_mnesia:dir().
 
+% 一个队列对应一个 qistate
 blank_state_name_dir_funs(Name, Dir, OnSyncFun, OnSyncMsgFun) ->
     {ok, MaxJournal} =
         application:get_env(rabbit, queue_index_max_journal_entries),
@@ -687,6 +689,7 @@ recover_message(false,     _, no_del,  RelSeq, {Segment, DirtyCount}) ->
 
 queue_index_walker({start, DurableQueues}) when is_list(DurableQueues) ->
     {ok, Gatherer} = gatherer:start_link(),
+    % 对每一个 queue，启动一个异步任务去调用 queue_index_walker_reader
     [begin
          ok = gatherer:fork(Gatherer),
          ok = worker_pool:submit_async(
@@ -709,9 +712,9 @@ queue_index_walker({next, Gatherer}) when is_pid(Gatherer) ->
     end.
 
 queue_index_walker_reader(QueueName, Gatherer) ->
-    ok = scan_queue_segments(
+    ok = scan_queue_segments( % 扫描一个 queue 中的所有 idx 文件
            fun (_SeqId, MsgId, _MsgProps, true, _IsDelivered, no_ack, ok)
-                 when is_binary(MsgId) ->
+                 when is_binary(MsgId) -> % 消息保存在 idx 文件中才会匹配这个函数
                    gatherer:sync_in(Gatherer, {MsgId, 1});
                (_SeqId, _MsgId, _MsgProps, _IsPersistent, _IsDelivered,
                 _IsAcked, Acc) ->
@@ -721,7 +724,7 @@ queue_index_walker_reader(QueueName, Gatherer) ->
 
 scan_queue_segments(Fun, Acc, QueueName) ->
     State = #qistate { segments = Segments, dir = Dir } =
-        recover_journal(blank_state(QueueName)),
+        recover_journal(blank_state(QueueName)),  % 读取并恢复一个 journal 文件，转换成相应结构返回
     Result = lists:foldr(
       fun (Seg, AccN) ->
               segment_entries_foldr(
@@ -730,7 +733,7 @@ scan_queue_segments(Fun, Acc, QueueName) ->
                         Fun(reconstruct_seq_id(Seg, RelSeq), MsgOrId, MsgProps,
                             IsPersistent, IsDelivered, IsAcked, AccM)
                 end, AccN, segment_find_or_new(Seg, Dir, Segments))
-      end, Acc, all_segment_nums(State)),
+      end, Acc, all_segment_nums(State)), % 遍历每一个 idx 文件
     {_SegmentCounts, _State} = terminate(State),
     Result.
 
@@ -752,6 +755,7 @@ create_pub_record_body(MsgOrId, #message_properties { expiry = Expiry,
 expiry_to_binary(undefined) -> <<?NO_EXPIRY:?EXPIRY_BITS>>;
 expiry_to_binary(Expiry)    -> <<Expiry:?EXPIRY_BITS>>.
 
+% segment entry 二进制数据转 basic_message record
 parse_pub_record_body(<<MsgIdNum:?MSG_ID_BITS, Expiry:?EXPIRY_BITS,
                         Size:?SIZE_BITS>>, MsgBin) ->
     %% work around for binary data fragmentation. See
@@ -771,38 +775,43 @@ parse_pub_record_body(<<MsgIdNum:?MSG_ID_BITS, Expiry:?EXPIRY_BITS,
 %%----------------------------------------------------------------------------
 %% journal manipulation
 %%----------------------------------------------------------------------------
-
+%% 传入一个 journal entry(SeqId + Action)和当前状态，把 entry 加到当前状态中形成一个新的状态，然后返回
+%% 参数 State 的初始状态参见函数 blank_state_name_dir_funs
 add_to_journal(SeqId, Action, State = #qistate { dirty_count = DCount,
-                                                 segments = Segments,
+                                                 segments = Segments, % 初始结构 {#{},[]}
                                                  dir = Dir }) ->
-    {Seg, RelSeq} = seq_id_to_seg_and_rel_seq_id(SeqId),
-    Segment = segment_find_or_new(Seg, Dir, Segments),
-    Segment1 = add_to_journal(RelSeq, Action, Segment),
+    {Seg, RelSeq} = seq_id_to_seg_and_rel_seq_id(SeqId),  % 根据消息 id 算出消息所在的 idx 文件序号 Seg 和文件内 entry 序号 RelSeq
+    Segment = segment_find_or_new(Seg, Dir, Segments),    % 根据 idx 文件序号 Seg 从 Segments 中读取或新建一个对应的 segment record
+    Segment1 = add_to_journal(RelSeq, Action, Segment),   % 根据 RelSeq 和 Action 构造 entry 然后存入 Segment 中，返回更新后的 Segment
     State #qistate { dirty_count = DCount + 1,
-                     segments = segment_store(Segment1, Segments) };
+                     segments = segment_store(Segment1, Segments) };  % 将 Segment1 保存到 Segments，可能保存到 map 或者缓存数组中
 
+% 根据参数 RelSeq 和 Action 构造一个 entry，把它放到 Segment 内部结构中，然后返回这个更新后的 Segment
 add_to_journal(RelSeq, Action,
-               Segment = #segment { journal_entries = JEntries,
-                                    entries_to_segment = EToSeg,
+               Segment = #segment { journal_entries = JEntries, % 数组
+                                    entries_to_segment = EToSeg,  % 列表数组，每个列表存一个或多个 entry 二进制数据
                                     unacked = UnackedCount }) ->
 
+    % 从 JEntries 的 RelSeq 位置获取 entry，然后把 Action 状态融合进去
+    % 如果指定位置没有，就新建一个带有 Action 状态的 entry
+    % Action 可以有三种类型 pub(三元组{IsPersistent, Bin, MsgBin})，delivery(原子)，ack(原子)
     {Fun, Entry} = action_to_entry(RelSeq, Action, JEntries),
 
     {JEntries1, EToSeg1} =
         case Fun of
-            set ->
-                {array:set(RelSeq, Entry, JEntries),
-                 array:set(RelSeq, entry_to_segment(RelSeq, Entry, []),
-                           EToSeg)};
-            reset ->
-                {array:reset(RelSeq, JEntries),
-                 array:reset(RelSeq, EToSeg)}
+            set ->  % set 表示 Entry 是新建的或有更新
+                {array:set(RelSeq, Entry, JEntries),  % 将 Entry 放入 JEntries 数组中 RelSeq 指向的位置
+                 array:set(RelSeq, entry_to_segment(RelSeq, Entry, []), % entry_to_segment 将 Entry 转换成 idx 文件中 entry 的二进制格式返回
+                           EToSeg)};  % EToSeg 存放类似数据 {[pub],[del,ack],[pub,del,ack],...}
+            reset ->  % reset 表示当前 entry 需要被删除
+                {array:reset(RelSeq, JEntries), % 把数组里下标为 RelSeq 的值重置为默认值
+                 array:reset(RelSeq, EToSeg)}   % 把数组里下标为 RelSeq 的值重置为默认值
         end,
 
     Segment #segment {
-      journal_entries = JEntries1,
-      entries_to_segment = EToSeg1,
-      unacked = UnackedCount + case Action of
+      journal_entries = JEntries1,  % 更新 journal entry 数组
+      entries_to_segment = EToSeg1, % 更新 segment entry 数组
+      unacked = UnackedCount + case Action of % 更新 segment 中未 ack 的消息总数
                                    ?PUB -> +1;
                                    del  ->  0;
                                    ack  -> -1
@@ -812,17 +821,17 @@ action_to_entry(RelSeq, Action, JEntries) ->
     case array:get(RelSeq, JEntries) of
         undefined ->
             {set,
-             case Action of
+             case Action of % journal 文件中没有和 RelSeq 相同的 entry，那么这条 entry 的状态是独立的
                  ?PUB -> {Action, no_del, no_ack};
                  del  -> {no_pub,    del, no_ack};
                  ack  -> {no_pub, no_del,    ack}
              end};
         ({Pub,    no_del, no_ack}) when Action == del ->
-            {set, {Pub,    del, no_ack}};
+            {set, {Pub,    del, no_ack}}; % 合并 pub + del 状态
         ({no_pub,    del, no_ack}) when Action == ack ->
-            {set, {no_pub, del,    ack}};
+            {set, {no_pub, del,    ack}}; % 合并 del + ack 状态
         ({?PUB,      del, no_ack}) when Action == ack ->
-            {reset, none}
+            {reset, none} % 合并 pub + del + ack 状态，返回 none 相当于可以删除这条 entry 了
     end.
 
 maybe_flush_journal(State) ->
@@ -873,6 +882,7 @@ append_journal_to_segment(#segment { journal_entries = JEntries,
                                entries_to_segment = array_new([]) }
     end.
 
+% 打开一个队列的 journal.jif 文件，返回文件句柄
 get_journal_handle(State = #qistate { journal_handle = undefined,
                                       dir = Dir,
                                       queue_name = Name }) ->
@@ -888,20 +898,22 @@ get_journal_handle(State = #qistate { journal_handle = Hdl }) ->
 %% Loading Journal. This isn't idempotent and will mess up the counts
 %% if you call it more than once on the same state. Assumes the counts
 %% are 0 to start with.
+%% 读取并解析一个队列的 journal 文件，更新 State 内部结构然后返回
 load_journal(State = #qistate { dir = Dir }) ->
     Path = filename:join(Dir, ?JOURNAL_FILENAME),
     case rabbit_file:is_file(Path) of
-        true  -> {JournalHdl, State1} = get_journal_handle(State),
+        true  -> {JournalHdl, State1} = get_journal_handle(State),  % 打开 journal 文件，返回的 State1 只改了参数 State 的 journal_handle 字段而已
                  Size = rabbit_file:file_size(Path),
                  {ok, 0} = file_handle_cache:position(JournalHdl, 0),
-                 {ok, JournalBin} = file_handle_cache:read(JournalHdl, Size),
-                 parse_journal_entries(JournalBin, State1);
+                 {ok, JournalBin} = file_handle_cache:read(JournalHdl, Size), % 将 journal 文件的数据读出来
+                 parse_journal_entries(JournalBin, State1); % 递归解析从 journal 文件读出来的二进制数据，存入 State1 中
         false -> State
     end.
 
 %% ditto
 recover_journal(State) ->
-    State1 = #qistate { segments = Segments } = load_journal(State),
+    State1 = #qistate { segments = Segments } = load_journal(State),  % 读取并解析 journal 文件
+    % 遍历刚刚解析出来的 journal entry，结合 segment 中相同 entry 的状态做一些调整，最终保存到 State 中并返回
     Segments1 =
         segment_map(
           fun (Segment = #segment { journal_entries = JEntries,
@@ -910,9 +922,9 @@ recover_journal(State) ->
                   %% We want to keep ack'd entries in so that we can
                   %% remove them if duplicates are in the journal. The
                   %% counts here are purely from the segment itself.
-                  {SegEntries, UnackedCountInSeg} = load_segment(true, Segment),
+                  {SegEntries, UnackedCountInSeg} = load_segment(true, Segment),  % 加载并解析一个 idx 文件，参数 Segment 只用到了 path 字段
                   {JEntries1, EToSeg1, UnackedCountDuplicates} =
-                      journal_minus_segment(JEntries, EToSeg, SegEntries),
+                      journal_minus_segment(JEntries, EToSeg, SegEntries),  % 更新 journal entry 状态，需要减去 segment 中相同 entry 的状态
                   Segment #segment { journal_entries = JEntries1,
                                      entries_to_segment = EToSeg1,
                                      unacked = (UnackedCountInJournal +
@@ -921,28 +933,34 @@ recover_journal(State) ->
           end, Segments),
     State1 #qistate { segments = Segments1 }.
 
+% 解析消费消息 entry
 parse_journal_entries(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
                         Rest/binary>>, State) ->
-    parse_journal_entries(Rest, add_to_journal(SeqId, del, State));
+    parse_journal_entries(Rest, add_to_journal(SeqId, del, State)); % 先将解析出的消息保存到对应 segment 中，然后递归解析 journal 文件数据
 
+% 解析确认消息 entry
 parse_journal_entries(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
                         Rest/binary>>, State) ->
-    parse_journal_entries(Rest, add_to_journal(SeqId, ack, State));
+    parse_journal_entries(Rest, add_to_journal(SeqId, ack, State)); % 先将解析出的消息保存到对应 segment 中，然后递归解析 journal 文件数据
+
+% 解析脏数据 entry
 parse_journal_entries(<<0:?JPREFIX_BITS, 0:?SEQ_BITS,
                         0:?PUB_RECORD_SIZE_BYTES/unit:8, _/binary>>, State) ->
     %% Journal entry composed only of zeroes was probably
     %% produced during a dirty shutdown so stop reading
     State;
+
+% 解析生产消息 entry
 parse_journal_entries(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Bin:?PUB_RECORD_BODY_BYTES/binary,
-                        MsgSize:?EMBEDDED_SIZE_BITS, MsgBin:MsgSize/binary,
+                        Bin:?PUB_RECORD_BODY_BYTES/binary,  % <<MsgId:16/binary, Expire:8/binary, Size:4/binary>>
+                        MsgSize:?EMBEDDED_SIZE_BITS, MsgBin:MsgSize/binary, % MsgBin 存消息内容
                         Rest/binary>>, State) ->
     IsPersistent = case Prefix of
                        ?PUB_PERSIST_JPREFIX -> true;
                        ?PUB_TRANS_JPREFIX   -> false
                    end,
     parse_journal_entries(
-      Rest, add_to_journal(SeqId, {IsPersistent, Bin, MsgBin}, State));
+      Rest, add_to_journal(SeqId, {IsPersistent, Bin, MsgBin}, State)); % 先将解析出的消息保存到对应 segment 中，然后递归解析 journal 文件数据
 parse_journal_entries(_ErrOrEoF, State) ->
     State.
 
@@ -996,18 +1014,20 @@ all_segment_nums(#qistate { dir = Dir, segments = Segments }) ->
           end, sets:from_list(segment_nums(Segments)),
           rabbit_file:wildcard(".*\\" ++ ?SEGMENT_EXTENSION, Dir)))).
 
+% 在 Segments 中查找 Seg 序号对应的 idx 文件信息，没找到就创建一个 segment
 segment_find_or_new(Seg, Dir, Segments) ->
     case segment_find(Seg, Segments) of
-        {ok, Segment} -> Segment;
-        error         -> SegName = integer_to_list(Seg)  ++ ?SEGMENT_EXTENSION,
-                         Path = filename:join(Dir, SegName),
+        {ok, Segment} -> Segment; % 将找到的 segment 返回
+        error         -> SegName = integer_to_list(Seg)  ++ ?SEGMENT_EXTENSION, % 未找到，新建一个 segment 并返回
+                         Path = filename:join(Dir, SegName),  % Path 结构如 0.idx, 1.idx, ...
                          #segment { num                = Seg,
                                     path               = Path,
-                                    journal_entries    = array_new(),
-                                    entries_to_segment = array_new([]),
+                                    journal_entries    = array_new(),   % 空数组
+                                    entries_to_segment = array_new([]), % 空数组
                                     unacked            = 0 }
     end.
 
+% 最近使用过的两个文件会缓存在列表中，现在列表中查找，然后在映射组中查找
 segment_find(Seg, {_Segments, [Segment = #segment { num = Seg } |_]}) ->
     {ok, Segment}; %% 1 or (2, matches head)
 segment_find(Seg, {_Segments, [_, Segment = #segment { num = Seg }]}) ->
@@ -1017,17 +1037,17 @@ segment_find(Seg, {Segments, _}) -> %% no match
 
 segment_store(Segment = #segment { num = Seg }, %% 1 or (2, matches head)
               {Segments, [#segment { num = Seg } | Tail]}) ->
-    {Segments, [Segment | Tail]};
+    {Segments, [Segment | Tail]}; % 命中缓存数组，直接覆盖
 segment_store(Segment = #segment { num = Seg }, %% 2, matches tail
               {Segments, [SegmentA, #segment { num = Seg }]}) ->
-    {Segments, [Segment, SegmentA]};
+    {Segments, [Segment, SegmentA]};  % 命中缓存数组，直接覆盖
 segment_store(Segment = #segment { num = Seg }, {Segments, []}) ->
-    {maps:remove(Seg, Segments), [Segment]};
+    {maps:remove(Seg, Segments), [Segment]};  % 缓存为空
 segment_store(Segment = #segment { num = Seg }, {Segments, [SegmentA]}) ->
-    {maps:remove(Seg, Segments), [Segment, SegmentA]};
+    {maps:remove(Seg, Segments), [Segment, SegmentA]};  % 缓存有一个位置，把要存入的 segment 从映射组中删除，存到缓存数组中
 segment_store(Segment = #segment { num = Seg },
               {Segments, [SegmentA, SegmentB]}) ->
-    {maps:put(SegmentB#segment.num, SegmentB, maps:remove(Seg, Segments)),
+    {maps:put(SegmentB#segment.num, SegmentB, maps:remove(Seg, Segments)),  % 缓存没位置了，淘汰一个放入映射组，当前 segment 存入缓存
      [Segment, SegmentA]}.
 
 segment_fold(Fun, Acc, {Segments, CachedSegments}) ->
@@ -1035,8 +1055,8 @@ segment_fold(Fun, Acc, {Segments, CachedSegments}) ->
               lists:foldl(Fun, Acc, CachedSegments), Segments).
 
 segment_map(Fun, {Segments, CachedSegments}) ->
-    {maps:map(fun (_Seg, Segment) -> Fun(Segment) end, Segments),
-     lists:map(Fun, CachedSegments)}.
+    {maps:map(fun (_Seg, Segment) -> Fun(Segment) end, Segments), % 对映射组里的值循环执行一个系列操作并返回一个新的映射组
+     lists:map(Fun, CachedSegments)}. % 列表里的每一个元素被函数调用
 
 segment_nums({Segments, CachedSegments}) ->
     lists:map(fun (#segment { num = Num }) -> Num end, CachedSegments) ++
@@ -1045,26 +1065,30 @@ segment_nums({Segments, CachedSegments}) ->
 segments_new() ->
     {#{}, []}.
 
+% 消息既被消费了，也被 ack 了，就不转存到 idx 文件中了
 entry_to_segment(_RelSeq, {?PUB, del, ack}, Initial) ->
     Initial;
+% 消息没被消费，且没被 ack，则将消息转成 idx 文件要求的 entry 格式，要注意一条消息在 idx 文件中一个是按照 pub -> delivery -> ack 从前往后存放的
+% 转换好的二进制数据放到空数组 Initial 中，然后作为返回值返回
 entry_to_segment(RelSeq, {Pub, Del, Ack}, Initial) ->
     %% NB: we are assembling the segment in reverse order here, so
     %% del/ack comes first.
     Buf1 = case {Del, Ack} of
                {no_del, no_ack} ->
                    Initial;
-               _ ->
+               _ -> % idx 文件中的消费或者确认类型的消息
                    Binary = <<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
                               RelSeq:?REL_SEQ_BITS>>,
                    case {Del, Ack} of
-                       {del, ack} -> [[Binary, Binary] | Initial];
-                       _          -> [Binary | Initial]
+                       {del, ack} -> [[Binary, Binary] | Initial];  % 消息被消费且被 ack 了，向 idx 文件中存两条相同的数据，一条表示已消费，一条表示已 ack
+                       _          -> [Binary | Initial] % 消息被消费了，还没被 ack，向 idx 文件中写一条数据，表示消费了一条消息
                    end
            end,
     case Pub of
         no_pub ->
             Buf1;
         {IsPersistent, Bin, MsgBin} ->
+            % 组装成 idx 文件中的 entry
             [[<<?PUB_PREFIX:?PUB_PREFIX_BITS,
                 (bool_to_int(IsPersistent)):1,
                 RelSeq:?REL_SEQ_BITS, Bin/binary,
@@ -1088,19 +1112,20 @@ read_bounded_segment(Seg, {StartSeg, StartRelSeq}, {EndSeg, EndRelSeq},
 
 segment_entries_foldr(Fun, Init,
                       Segment = #segment { journal_entries = JEntries }) ->
-    {SegEntries, _UnackedCount} = load_segment(false, Segment),
+    {SegEntries, _UnackedCount} = load_segment(false, Segment), % 又重新解析一遍？
     {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
     array:sparse_foldr(
       fun (RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}, Acc) ->
-              {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
+              {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin), % 返回值 {basic_message,message_properties} 或者 {msg_id,message_properties}
               Fun(RelSeq, {{MsgOrId, MsgProps, IsPersistent}, Del, Ack}, Acc)
       end, Init, SegEntries1).
 
 %% Loading segments
 %%
 %% Does not do any combining with the journal at all.
+%% 读取并解析一个 idx 文件，最终返回结构如 Empty 所示
 load_segment(KeepAcked, #segment { path = Path }) ->
-    Empty = {array_new(), 0},
+    Empty = {array_new(), 0}, % 结构状态 {{{IsPersistent, Bin, MsgBin}, no_del, no_ack}, Unacked}
     case rabbit_file:is_file(Path) of
         false -> Empty;
         true  -> Size = rabbit_file:file_size(Path),
@@ -1110,15 +1135,18 @@ load_segment(KeepAcked, #segment { path = Path }) ->
                  {ok, 0} = file_handle_cache:position(Hdl, bof),
                  {ok, SegBin} = file_handle_cache:read(Hdl, Size),
                  ok = file_handle_cache:close(Hdl),
-                 Res = parse_segment_entries(SegBin, KeepAcked, Empty),
+                 Res = parse_segment_entries(SegBin, KeepAcked, Empty), % 解析 idx 文件中完整的二进制数据
                  Res
     end.
 
+% 解析 idx 文件的 pub 消息
 parse_segment_entries(<<?PUB_PREFIX:?PUB_PREFIX_BITS,
                         IsPersistNum:1, RelSeq:?REL_SEQ_BITS, Rest/binary>>,
                       KeepAcked, Acc) ->
-    parse_segment_publish_entry(
+    parse_segment_publish_entry(  % 把解析出来的数据存到 Acc 中
       Rest, 1 == IsPersistNum, RelSeq, KeepAcked, Acc);
+
+% 解析 idx 文件的 del、ack 消息
 parse_segment_entries(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
                        RelSeq:?REL_SEQ_BITS, Rest/binary>>, KeepAcked, Acc) ->
     parse_segment_entries(
@@ -1126,6 +1154,7 @@ parse_segment_entries(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
 parse_segment_entries(<<>>, _KeepAcked, Acc) ->
     Acc.
 
+% 把一条 pub 消息存到 SegEntries 数组中，RelSeq 作为数组下标
 parse_segment_publish_entry(<<Bin:?PUB_RECORD_BODY_BYTES/binary,
                               MsgSize:?EMBEDDED_SIZE_BITS,
                               MsgBin:MsgSize/binary, Rest/binary>>,
@@ -1133,10 +1162,12 @@ parse_segment_publish_entry(<<Bin:?PUB_RECORD_BODY_BYTES/binary,
                             {SegEntries, Unacked}) ->
     Obj = {{IsPersistent, Bin, MsgBin}, no_del, no_ack},
     SegEntries1 = array:set(RelSeq, Obj, SegEntries),
-    parse_segment_entries(Rest, KeepAcked, {SegEntries1, Unacked + 1});
+    parse_segment_entries(Rest, KeepAcked, {SegEntries1, Unacked + 1}); % 递归解析下一个 entry
 parse_segment_publish_entry(Rest, _IsPersistent, _RelSeq, KeepAcked, Acc) ->
     parse_segment_entries(Rest, KeepAcked, Acc).
 
+% 把一条 del/ack 消息覆盖到 SegEntries 数组中，注意这里一定可以在数组中找到一条之前的消息
+% 因为同一条消息（SeqId）唯一确定一个 idx 文件号和文件内偏移量，无论这条消息是 pub，del，ack
 add_segment_relseq_entry(KeepAcked, RelSeq, {SegEntries, Unacked}) ->
     case array:get(RelSeq, SegEntries) of
         {Pub, no_del, no_ack} ->
@@ -1151,7 +1182,7 @@ array_new() ->
     array_new(undefined).
 
 array_new(Default) ->
-    array:new([{default, Default}, fixed, {size, ?SEGMENT_ENTRY_COUNT}]).
+    array:new([{default, Default}, fixed, {size, ?SEGMENT_ENTRY_COUNT}]). % 创建一个固定大小，默认值为 Default 的数组
 
 bool_to_int(true ) -> 1;
 bool_to_int(false) -> 0.
@@ -1162,15 +1193,20 @@ bool_to_int(false) -> 0.
 
 %% Combine what we have just read from a segment file with what we're
 %% holding for that segment in memory. There must be no duplicates.
+%% 把 segment entry 和 journal entry 的状态结合起来，规则是
+%% 1. entry 只在 journal 文件中，并且还未 ack，则移动到 segment 中
+%% 2. entry 只在 journal 文件中，并且已经 ack，不做操作
+%% 3. segment entry 的状态是 pub，journal entry 的状态是 del，把 segment entry 状态合并成 pub+del
+%% 4. segment entry 的状态还未 ack，journal entry 状态已 ack，把 segment entry 删除
 segment_plus_journal(SegEntries, JEntries) ->
     array:sparse_foldl(
-      fun (RelSeq, JObj, {SegEntriesOut, AdditionalUnacked}) ->
+      fun (RelSeq, JObj, {SegEntriesOut, AdditionalUnacked}) -> % JObj 是 journal entry
               SegEntry = array:get(RelSeq, SegEntriesOut),
               {Obj, AdditionalUnackedDelta} =
-                  segment_plus_journal1(SegEntry, JObj),
+                  segment_plus_journal1(SegEntry, JObj),  % 将 segment entry 和 journal entry 相结合
               {case Obj of
                    undefined -> array:reset(RelSeq, SegEntriesOut);
-                   _         -> array:set(RelSeq, Obj, SegEntriesOut)
+                   _         -> array:set(RelSeq, Obj, SegEntriesOut) % 将结合状态之后的 entry 保存到 segment entry 数组中
                end,
                AdditionalUnacked + AdditionalUnackedDelta}
       end, {SegEntries, 0}, JEntries).
@@ -1200,20 +1236,36 @@ segment_plus_journal1({?PUB, del, no_ack},          {no_pub, no_del, ack}) ->
 %%
 %% We need to update the entries_to_segment since they are just a
 %% cache of what's on the journal.
+%% 遍历 JEntries 中每一个 journal entry，跟 SegEntries 中的 segment entry 进行对比
+%% 来决定要对 journal entry 修改、删除还是原样保存
+%% 以保证两种 entry 的状态不冲突、不重合，另外 SegEntries 内容不做修改
 journal_minus_segment(JEntries, EToSeg, SegEntries) ->
     array:sparse_foldl(
       fun (RelSeq, JObj, {JEntriesOut, EToSegOut, UnackedRemoved}) ->
-              SegEntry = array:get(RelSeq, SegEntries),
+              SegEntry = array:get(RelSeq, SegEntries), % 从 segment entry 数组中找 entry，没找到返回 undefined
+              % 根据 RelSeq 对应 entry 分别在 journal 文件和 idx 文件中的存在情况和相应的状态，返回一个二元组
+              % 二元组用来指导下面对 JEntriesOut 和 EToSegOut 两个数组的修改
               {Obj, UnackedRemovedDelta} =
                   journal_minus_segment1(JObj, SegEntry),
               {JEntriesOut1, EToSegOut1} =
                   case Obj of
                       keep      ->
+                          % entry 继续保存在 journal 数组中，有几种情况需要这么做
+                          % 1. segment entry 不存在，journal entry 中有 pub 状态
+                          % 2. segment entry 还没有 ack，journal entry 有更新的状态，例如 del、ack
                           {JEntriesOut, EToSegOut};
                       undefined ->
+                          % 把 entry 从 journal 数组中删除，有几种情况需要这么做
+                          % 1. segment entry 和 journal entry 状态完全相同
+                          % 2. segment entry 的状态是 journal entry 状态的超集
+                          % 3. segment entry 不存在，并且 journal entry 没有 pub 状态，属于非法消息
                           {array:reset(RelSeq, JEntriesOut),
                            array:reset(RelSeq, EToSegOut)};
                       _         ->
+                          % entry 继续保存在 journal 数组中，但是需要 entry 状态有修改
+                          % 这种情况是 journal entry 和 segment entry 有重叠的状态时发生，需要把 journal entry 中的重叠状态删除，然后返回到 Obj
+                          % 例如 journal entry 状态是 {pub,del,no_ack}，segment entry 状态是 {pub,no_del,no_ack}，那么需要返回 {no_pub,del,no_ack}
+                          % 即把 journal entry 中重叠的 pub 状态删除
                           {array:set(RelSeq, Obj, JEntriesOut),
                            array:set(RelSeq, entry_to_segment(RelSeq, Obj, []),
                                      EToSegOut)}
@@ -1228,12 +1280,14 @@ journal_minus_segment(JEntries, EToSeg, SegEntries) ->
 %% UnackedRemoved.
 
 %% Both the same. Must be at least the publish
+%% idx 文件和 journal 文件中拥有相同的 entry，把 journal 文件中的 entry 删掉
 journal_minus_segment1({?PUB, _Del, no_ack} = Obj, Obj) ->
     {undefined, 1};
 journal_minus_segment1({?PUB, _Del, ack} = Obj,    Obj) ->
     {undefined, 0};
 
 %% Just publish in journal
+%% journal 文件中有 pub 类型的 entry，idx 文件中没有，继续保留在 journal 文件中
 journal_minus_segment1({?PUB, no_del, no_ack},     undefined) ->
     {keep, 0};
 
@@ -1241,7 +1295,7 @@ journal_minus_segment1({?PUB, no_del, no_ack},     undefined) ->
 journal_minus_segment1({?PUB, del, no_ack},        undefined) ->
     {keep, 0};
 journal_minus_segment1({?PUB = Pub, del, no_ack},  {Pub, no_del, no_ack}) ->
-    {{no_pub, del, no_ack}, 1};
+    {{no_pub, del, no_ack}, 1}; % journal entry 有 pub、del，segment entry 有 pub，删除 journal entry 中的 pub，保留 del
 
 %% Publish, deliver and ack in journal
 journal_minus_segment1({?PUB, del, ack},           undefined) ->

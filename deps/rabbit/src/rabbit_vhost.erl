@@ -46,7 +46,7 @@
                          'ok'.
 
 recover() ->
-    %% Clear out remnants of old incarnation, in case we restarted
+    %% Clear out remnants(残余物) of old incarnation(化身), in case we restarted
     %% faster than other nodes handled DOWN messages from us.
     rabbit_amqqueue:on_node_down(node()),
 
@@ -59,7 +59,7 @@ recover() ->
     %% So recovery will be run every time a vhost supervisor is restarted.
     ok = rabbit_vhost_sup_sup:start(),
 
-    [ok = rabbit_vhost_sup_sup:init_vhost(VHost) || VHost <- rabbit_vhost:list()],
+    [ok = rabbit_vhost_sup_sup:init_vhost(VHost) || VHost <- rabbit_vhost:list()],  % 初始化每一个 vhost，最终会调到下面的 recover/1
     ok.
 
 recover(VHost) ->

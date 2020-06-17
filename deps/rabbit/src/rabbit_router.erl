@@ -47,7 +47,7 @@ match_bindings(SrcName, Match) ->
 
 match_routing_key(SrcName, [RoutingKey]) ->
     find_routes(#route{binding = #binding{source      = SrcName,
-                                          destination = '$1',
+                                          destination = '$1', % mnesia 语法
                                           key         = RoutingKey,
                                           _           = '_'}},
                 []);
@@ -72,5 +72,8 @@ match_routing_key(SrcName, [_|_] = RoutingKeys) ->
 %% tables of the ordered_set type, safe_fixtable/2 is not necessary as
 %% calls to first/1 and next/2 will always succeed."), which
 %% rabbit_route is.
+%% 根据 exchange name 和 routing key 查找绑定的 queue，这个数据是持久化到 mnesia 的 rabbit_route 表中，例如：
+%% 输入：ets:select(rabbit_route, [{{route,{binding,{resource,<<"/">>,exchange,<<"test_exchange">>},<<"rk">>,'$1','_'},const},[],['$1']}]).
+%% 输出：[{resource,<<"/">>,queue,<<"test_queue">>}]
 find_routes(MatchHead, Conditions) ->
     ets:select(rabbit_route, [{MatchHead, Conditions, ['$1']}]).

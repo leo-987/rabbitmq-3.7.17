@@ -33,7 +33,7 @@ start_link(VHost) ->
         {ok, Pid}  ->
             {error, {already_started, Pid}};
         {error, _} ->
-            supervisor:start_link(?MODULE, [VHost])
+            supervisor:start_link(?MODULE, [VHost]) % 启动一个 supervisor 进程，自己作为回调模块，模块的 init 方法会被调用
     end.
 
 init([VHost]) ->
@@ -45,12 +45,12 @@ init([VHost]) ->
          {rabbit_vhost_sup,
           {rabbit_vhost_sup_wrapper, start_vhost_sup, [VHost]},
            permanent, infinity, supervisor,
-           [rabbit_vhost_sup]},
+           [rabbit_vhost_sup]}, % 子进程1
         %% rabbit_vhost_process is a vhost identity process, which
         %% is responsible for data recovery and vhost aliveness status.
         %% See the module comments for more info.
          {rabbit_vhost_process,
-          {rabbit_vhost_process, start_link, [VHost]},
+          {rabbit_vhost_process, start_link, [VHost]},  % 子进程2
            permanent, ?WORKER_WAIT, worker,
            [rabbit_vhost_process]}]}}.
 

@@ -911,11 +911,11 @@ create_channel(Channel,
                                    vhost        = VHost,
                                    capabilities = Capabilities}} = State) ->
     {ok, _ChSupPid, {ChPid, AState}} =
-        rabbit_channel_sup_sup:start_channel(
+        rabbit_channel_sup_sup:start_channel( % 启动 rabbit_channel_sup_sup 监控的子进程 rabbit_channel_sup，后者再启动他所监控的子进程 rabbit_channel、rabbit_writer 等
           ChanSupSup, {tcp, Sock, Channel, FrameMax, self(), Name,
                        Protocol, User, VHost, Capabilities, Collector}),
     _ = rabbit_channel:source(ChPid, ?MODULE),
-    MRef = erlang:monitor(process, ChPid),
+    MRef = erlang:monitor(process, ChPid),  % 添加对 channel 进程的监控
     put({ch_pid, ChPid}, {Channel, MRef}),
     put({channel, Channel}, {ChPid, AState}),
     {ok, {ChPid, AState}, State#v1{channel_count = ChannelCount + 1}}.

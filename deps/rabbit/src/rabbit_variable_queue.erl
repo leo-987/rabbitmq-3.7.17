@@ -480,6 +480,8 @@ explicit_gc_run_operation_threshold_for_mode(Mode) ->
 %%----------------------------------------------------------------------------
 
 start(VHost, DurableQueues) ->
+    % DurableQueues 的结构是个数组 [{resource,<<"/">>,queue,<<"queue_name">>},[...],[...]]
+    % 注意数组中只包括 master 队列，不包括 slave 队列
     {AllTerms, StartFunState} = rabbit_queue_index:start(VHost, DurableQueues),
     %% Group recovery terms by vhost.
     ClientRefs = [Ref || Terms <- AllTerms,

@@ -18,7 +18,7 @@
 
 -include("rabbit.hrl").
 
--behaviour(supervisor2).
+-behaviour(supervisor2).  % 这是一个监控器进程，需要监控其他监控器进程或工作进程
 
 -export([init/1]).
 
@@ -37,28 +37,34 @@
 
 -record(vhost_sup, {vhost, vhost_sup_pid, wrapper_pid, vhost_process_pid}).
 
+% 模块整体流程：
+% 1. start()：把自己挂到 rabbit_sup supervisor 进程下
+% 2. start_link()：自己也作为一个 supervisor 进程（的回调模块）
+% 3. init()：定义自己管理的子进程
+% 4. start_child()：启动子进程
 start() ->
-    case supervisor:start_child(rabbit_sup, {?MODULE,
-                                             {?MODULE, start_link, []},
-                                             permanent, infinity, supervisor,
-                                             [?MODULE]}) of
+    % 动态添加子进程，把自己挂到 rabbit_sup 进程下启动，模块的 start_link 方法会被调用
+    case supervisor:start_child(rabbit_sup, {?MODULE, % 子进程别名
+                                             {?MODULE, start_link, []}, % 子进程 MFA
+                                             permanent, infinity, supervisor, % 重启策略
+                                             [?MODULE]}) of % 子进程是一个 supervisor，所以列表元素需要填上回调模块名
         {ok, _}      -> ok;
         {error, Err} -> {error, Err}
     end.
 
 start_link() ->
-    supervisor2:start_link({local, ?MODULE}, ?MODULE, []).
+    supervisor2:start_link({local, ?MODULE}, ?MODULE, []).  % 启动一个 supervisor 进程，自己作为回调模块，模块的 init 方法会被调用
 
 init([]) ->
     %% This assumes that a single vhost termination should not shut down nodes
     %% unless the operator opts in.
     RestartStrategy = vhost_restart_strategy(),
     ets:new(?MODULE, [named_table, public, {keypos, #vhost_sup.vhost}]),
-
-    {ok, {{simple_one_for_one, 0, 5},
-          [{rabbit_vhost, {rabbit_vhost_sup_wrapper, start_link, []},
-            RestartStrategy, ?SUPERVISOR_WAIT, supervisor,
-            [rabbit_vhost_sup_wrapper, rabbit_vhost_sup]}]}}.
+    % init 函数的返回值描述了监控树的结构，这里不会启动任何子进程，只是定义了子进程的样子
+    {ok, {{simple_one_for_one, 0, 5}, % simple_one_for_one 表示所有的子进程都是同样进程类型并且是动态添加的实例，通过 start_child 动态添加启动
+          [{rabbit_vhost, {rabbit_vhost_sup_wrapper, start_link, []}, % rabbit_vhost 是子进程别名
+            RestartStrategy, ?SUPERVISOR_WAIT, supervisor,  % 重启策略
+            [rabbit_vhost_sup_wrapper, rabbit_vhost_sup]}]}}. % 如果子进程是监控器或者 gen_server 行为的回调模块，就在这里指定回调模块名
 
 start_on_all_nodes(VHost) ->
     %% Do not try to start a vhost on booting peer nodes
@@ -189,7 +195,7 @@ start_vhost(VHost) ->
         true  ->
             case whereis(?MODULE) of
                 Pid when is_pid(Pid) ->
-                    supervisor2:start_child(?MODULE, [VHost]);
+                    supervisor2:start_child(?MODULE, [VHost]);  % 调用在 init 函数中定义好的子进程，即 rabbit_vhost_sup_wrapper:start_link
                 undefined ->
                     {error, rabbit_vhost_sup_sup_not_running}
             end

@@ -45,7 +45,7 @@
          code_change/3]).
 
 start_link(VHost) ->
-    gen_server2:start_link(?MODULE, [VHost], []).
+    gen_server2:start_link(?MODULE, [VHost], []).   % 启动一个 gen_server，本模块作为回调模块，init 函数将被执行
 
 
 init([VHost]) ->

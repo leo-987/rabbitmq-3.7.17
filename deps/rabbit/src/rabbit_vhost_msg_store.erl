@@ -23,7 +23,7 @@
 
 start(VHost, Type, ClientRefs, StartupFunState) when is_list(ClientRefs);
                                                      ClientRefs == undefined  ->
-    case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of
+    case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of   % rabbit_msg_store 进程是挂在 rabbit_vhost_msg_store 进程下面的
         {ok, VHostSup} ->
             VHostDir = rabbit_vhost:msg_store_dir_path(VHost),
             supervisor2:start_child(VHostSup,

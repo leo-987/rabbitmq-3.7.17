@@ -25,7 +25,7 @@
 -export([start_link/1]).
 
 start_link(VHost) ->
-    supervisor2:start_link(?MODULE, [VHost]).
+    supervisor2:start_link(?MODULE, [VHost]).   % 启动了一个没有任何子进程的 supervisor 进程
 
 init([_VHost]) ->
     {ok, {{one_for_all, 0, 1}, []}}.
