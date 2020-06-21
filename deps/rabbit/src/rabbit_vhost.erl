@@ -236,7 +236,7 @@ exists(VHostPath) ->
     mnesia:dirty_read({rabbit_vhost, VHostPath}) /= [].
 
 list() ->
-    mnesia:dirty_all_keys(rabbit_vhost).
+    mnesia:dirty_all_keys(rabbit_vhost).  % 返回 vhost 列表，例如 [<<"/">>,<<"test_vhost">>]
 
 -spec count() -> non_neg_integer().
 count() ->

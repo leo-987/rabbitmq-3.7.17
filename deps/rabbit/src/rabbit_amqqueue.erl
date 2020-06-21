@@ -230,7 +230,7 @@ warn_file_limit() ->
 
 recover(VHost) ->
     Queues = find_durable_queues(VHost),
-    {ok, BQ} = application:get_env(rabbit, backing_queue_module),
+    {ok, BQ} = application:get_env(rabbit, backing_queue_module), % 启动时这个变量是 rabbit_variable_queue，启动后改成了 rabbit_priority_queue
     %% We rely on BQ:start/1 returning the recovery terms in the same
     %% order as the supplied queue names, so that we can zip them together
     %% for further processing in recover_durable_queues.
@@ -270,7 +270,8 @@ mark_local_durable_queues_stopped(VHost) ->
               State =/= stopped ]
         end).
 
-% 从 mnesia 中找出 VHost 下的属于当前节点的 queue
+% 从 mnesia 中找出 VHost 下并且属于当前节点的 queue
+% 可登陆 vm 执行 mnesia:dirty_all_keys + mnesia:dirty_read 获取 #amqqueue 数据
 find_durable_queues(VHost) ->
     Node = node(),
     mnesia:async_dirty(

@@ -479,14 +479,18 @@ explicit_gc_run_operation_threshold_for_mode(Mode) ->
 %% Public API
 %%----------------------------------------------------------------------------
 
+%% 从 rabbit_amqqueue:recover 调过来的
 start(VHost, DurableQueues) ->
     % DurableQueues 的结构是个数组 [{resource,<<"/">>,queue,<<"queue_name">>},[...],[...]]
     % 注意数组中只包括 master 队列，不包括 slave 队列
     {AllTerms, StartFunState} = rabbit_queue_index:start(VHost, DurableQueues),
     %% Group recovery terms by vhost.
-    ClientRefs = [Ref || Terms <- AllTerms,
-                      Terms /= non_clean_shutdown,
+    %% ClientRefs 是 VHost 下所有队列的标识符
+    ClientRefs = [Ref || Terms <- AllTerms,         % 一个 Terms 就是一个属性列表
+                      Terms /= non_clean_shutdown,  % 过滤调 Terms 是 non_clean_shutdown 的元素
                       begin
+                          % 取出属性列表中 key 对应的 value，例如 {persistent_ref,<<21,163>>} get_value 返回 <<21,163>>
+                          % persistent_ref 应该是一个队列标识符 GUID，参考本模块的 rabbit_msg_store:client_init
                           Ref = proplists:get_value(persistent_ref, Terms),
                           Ref =/= undefined
                       end],

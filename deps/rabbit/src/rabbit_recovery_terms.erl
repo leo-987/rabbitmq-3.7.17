@@ -38,7 +38,7 @@
 -include("rabbit.hrl").
 
 %%----------------------------------------------------------------------------
-
+%% 这个模块提供了一系列接口，用于操作 dets
 -spec start(rabbit_types:vhost()) -> rabbit_types:ok_or_error(term()).
 -spec stop(rabbit_types:vhost()) -> rabbit_types:ok_or_error(term()).
 -spec store(rabbit_types:vhost(), file:filename(), term()) -> rabbit_types:ok_or_error(term()).
@@ -80,11 +80,12 @@ stop(VHost) ->
     end.
 
 store(VHost, DirBaseName, Terms) ->
-    dets:insert(VHost, {DirBaseName, Terms}).
+    dets:insert(VHost, {DirBaseName, Terms}). % VHost 是表名，DirBaseName 是 key，整个元组是 value
 
+% 从 VHost 表中找出键是 DirBaseName 的元组列表
 read(VHost, DirBaseName) ->
     case dets:lookup(VHost, DirBaseName) of
-        [{_, Terms}] -> {ok, Terms};
+        [{_, Terms}] -> {ok, Terms};  % 看起来只会找到一个元组，并且返回元组中除了 key 之外的元素，Terms 应该是一个列表
         _            -> {error, not_found}
     end.
 

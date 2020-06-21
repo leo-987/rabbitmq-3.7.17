@@ -498,25 +498,39 @@ bounds(State = #qistate { segments = Segments }) ->
         end,
     {LowSeqId, NextSeqId, State}.
 
+% 进程正常退出时会往 recovery.dets 中写入一些信息，启动是需要从文件中恢复出队列信息
 start(VHost, DurableQueueNames) ->
-    ok = rabbit_recovery_terms:start(VHost),
+    ok = rabbit_recovery_terms:start(VHost),  % 会打开 VHost 下的 recovery.dets 文件
+    % 对每一个持久化 queue，从 recovery.dets 中读取出队列的信息，
+    % DurableTerms 是一个 list，里面的每一个元素都是一个属性列表或者 non_clean_shutdown
+    % 属性列表是普通列表，其中包含元组形式的条目，元素的第一个元素是用于查找和插入的键
     {DurableTerms, DurableDirectories} =
         lists:foldl(
-          fun(QName, {RecoveryTerms, ValidDirectories}) ->
-                  DirName = queue_name_to_dir_name(QName),
-                  RecoveryInfo = case rabbit_recovery_terms:read(VHost, DirName) of
+          fun(QName, {RecoveryTerms, ValidDirectories}) ->  % QName 是一个 #resource
+                  DirName = queue_name_to_dir_name(QName),  % DirName 是 QName 名字的 md5 值，即 queues 目录下的文件名
+                  RecoveryInfo = case rabbit_recovery_terms:read(VHost, DirName) of % 从 dets 中读出 DirName 关联的信息
                                      {error, _}  -> non_clean_shutdown;
                                      {ok, Terms} -> Terms
                                  end,
+                  % 一个 queue 的 RecoveryInfo 是一个属性列表，结构如下：
+                  % [
+                  %  {segments,[{0,1}]},
+                  %  {persistent_ref,<<169,164,212,64,15,21,8,33,51,142,201,138,26,62,121,163>>},
+                  %  {persistent_count,1},
+                  %  {persistent_bytes,4}
+                  % ]
+                  % 或者是 non_clean_shutdown
                   {[RecoveryInfo | RecoveryTerms],
                    sets:add_element(DirName, ValidDirectories)}
           end, {[], sets:new()}, DurableQueueNames),
     %% Any queue directory we've not been asked to recover is considered garbage
+    %% 找出 queues 目录下非队列目录，因为 vhost 包含那哪些 queue 是从 mnesia 数据库中读出来的
+    %% 所以如果我在 queues 目录下新建一个目录，启动时会认为它不是一个队列目录，然后将它删除
     rabbit_file:recursive_delete(
       [DirName ||
         DirName <- all_queue_directory_names(VHost),
         not sets:is_element(filename:basename(DirName), DurableDirectories)]),
-    rabbit_recovery_terms:clear(VHost),
+    rabbit_recovery_terms:clear(VHost), % 清空表里的所有数据，recovery.dets 文件会变小
 
     %% The backing queue interface requires that the queue recovery terms
     %% which come back from start/1 are in the same order as DurableQueueNames
